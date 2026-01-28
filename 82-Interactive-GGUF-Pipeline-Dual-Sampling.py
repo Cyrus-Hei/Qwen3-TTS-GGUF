@@ -59,7 +59,6 @@ class Qwen3TTS:
             "master_gguf": os.path.join(self.model_dir, "qwen3_tts_talker.gguf"),
             "craftsman_gguf": os.path.join(self.model_dir, "qwen3_tts_craftsman.gguf"),
             "mouth_onnx": os.path.join(self.model_dir, "qwen3_tts_decoder.onnx"),
-            "master_head": os.path.join(self.model_dir, "codec_head.npy"),
             "text_table": os.path.join(self.model_dir, "text_embedding_projected.npy"),
             "proj_w": os.path.join(self.model_dir, "craftsman_hf/proj_weight.npy"),
             "proj_b": os.path.join(self.model_dir, "craftsman_hf/proj_bias.npy")
@@ -73,7 +72,6 @@ class Qwen3TTS:
         """加载权重表与 Tokenizer"""
         print("  - 加载权重表与 Tokenizer...")
         self.assets = {
-            "master_head": np.load(self.paths["master_head"]),
             "text_table": np.load(self.paths["text_table"]),
             "proj": {
                 "weight": np.load(self.paths["proj_w"]),
@@ -283,7 +281,10 @@ class Qwen3TTS:
             self.m_batch.n_seq_id[i], self.m_batch.seq_id[i][0], self.m_batch.logits[i] = 1, 0, 1
         nano_llama.llama_decode(self.m_ctx, self.m_batch)
         
+        # 直接从 GGUF 提取 Hidden 和 Logits
         m_hidden = np.ctypeslib.as_array(nano_llama.llama_get_embeddings(self.m_ctx), shape=(n_p, 2048))[-1].copy()
+        m_logits = np.ctypeslib.as_array(nano_llama.llama_get_logits(self.m_ctx), shape=(n_p, 3072))[-1].copy()
+        
         cur_pos, all_codes = n_p, []
         stats["prefill_time"] = time.time() - pre_start
         
@@ -291,8 +292,7 @@ class Qwen3TTS:
         loop_start = time.time()
         for step_idx in range(max_steps):
             # 1. 大师预测 (Master)
-            m_logits = m_hidden @ self.assets["master_head"].T
-            
+            # m_logits 已在 prefill 或 feedback 结尾处更新
             if mc["do_sample"]:
                 code_0 = self._sample(m_logits, mc["temperature"], mc["top_p"], mc["top_k"])
             else:
@@ -348,7 +348,11 @@ class Qwen3TTS:
             self.m_batch.pos[0] = self.m_batch.pos[1] = self.m_batch.pos[2] = cur_pos
             self.m_batch.pos[3], self.m_batch.logits[0], cur_pos = 0, 1, cur_pos + 1
             nano_llama.llama_decode(self.m_ctx, self.m_batch)
+            
+            # 更新下一轮所需的 Hidden 与 Logits
             m_hidden = np.ctypeslib.as_array(nano_llama.llama_get_embeddings(self.m_ctx), shape=(1, 2048))[0].copy()
+            m_logits = np.ctypeslib.as_array(nano_llama.llama_get_logits(self.m_ctx), shape=(1, 3072))[0].copy()
+            
             # 将反馈耗时归入大师，因为这本质上是大师接受输入的过程
             stats["master_time"] += (time.time() - f_s)
         
@@ -376,7 +380,7 @@ class Qwen3TTS:
 if __name__ == "__main__":
     tts = Qwen3TTS()
     TARGET_TEXT = "你好，我是具有随机性的千问3-TTS。这是我的终极进化形态。"
-    SPEAKER = "vivian"
+    SPEAKER = "serena"
     LANGUAGE = "chinese"
     
     wav = tts.synthesize(TARGET_TEXT, speaker_id=SPEAKER, language=LANGUAGE, max_steps=400, verbose=True, 
