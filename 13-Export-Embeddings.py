@@ -81,7 +81,7 @@ def export_embeddings():
 
 def verify_exports(model):
     print("    Verifying Text Embedding Lookup...")
-    saved_text = np.load(OUTPUT_DIR / "text_embedding.npy")
+    saved_text = np.load(OUTPUT_DIR / "text_embedding_projected.npy")
     # Check ID 100
     id_to_check = 100
     with torch.no_grad():

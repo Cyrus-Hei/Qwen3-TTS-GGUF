@@ -1,8 +1,6 @@
 import os
 import ctypes
 import numpy as np
-import torch
-import torch.nn.functional as F
 import soundfile as sf
 import sounddevice as sd
 import onnxruntime as ort
@@ -12,6 +10,12 @@ import qwen3_tts_gguf.nano_llama as nano_llama
 from qwen3_tts_gguf import logger
 
 # os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+# ==================== Vulkan 选项 ====================
+
+# os.environ["VK_ICD_FILENAMES"] = "none"       # 禁止 Vulkan
+# os.environ["GGML_VK_VISIBLE_DEVICES"] = "1"   # 禁止 Vulkan 用独显（强制用集显）
+# os.environ["GGML_VK_DISABLE_F16"] = "1"       # 禁止 VulkanFP16 计算（Intel集显fp16有溢出问题）
 
 class Qwen3TTS:
     """
@@ -53,11 +57,12 @@ class Qwen3TTS:
         # 路径定义
         self.paths = {
             "master_gguf": os.path.join(self.model_dir, "qwen3_tts_talker.gguf"),
-            "craftsman_gguf": os.path.join(self.model_dir, "qwen3_tts_craftsman_advanced.gguf"),
+            "craftsman_gguf": os.path.join(self.model_dir, "qwen3_tts_craftsman.gguf"),
             "mouth_onnx": os.path.join(self.model_dir, "qwen3_tts_decoder.onnx"),
-            "master_head": os.path.join(self.model_dir, "codec_head_weight.npy"),
+            "master_head": os.path.join(self.model_dir, "codec_head.npy"),
             "text_table": os.path.join(self.model_dir, "text_embedding_projected.npy"),
-            "proj_pt": os.path.join(self.model_dir, "craftsman_hf/master_to_craftsman_proj.pt")
+            "proj_w": os.path.join(self.model_dir, "craftsman_hf/proj_weight.npy"),
+            "proj_b": os.path.join(self.model_dir, "craftsman_hf/proj_bias.npy")
         }
         
         print("[Engine] 正在启动初始化流程...")
@@ -70,17 +75,23 @@ class Qwen3TTS:
         self.assets = {
             "master_head": np.load(self.paths["master_head"]),
             "text_table": np.load(self.paths["text_table"]),
-            "emb_tables": [np.load(os.path.join(self.model_dir, f"codec_embedding_{i}.npy")) for i in range(16)],
-            "proj": torch.load(self.paths["proj_pt"], map_location="cpu")
+            "proj": {
+                "weight": np.load(self.paths["proj_w"]),
+                "bias": np.load(self.paths["proj_b"])
+            },
+            "emb_tables": [],
+            "emb_tables_1024": []
         }
-        self.assets["tts_pad"] = self.assets["text_table"][151671]
         
-        # 预投影加速
-        proj_w = self.assets["proj"]["weight"].float()
-        proj_b = self.assets["proj"]["bias"].float()
-        self.assets["emb_tables_1024"] = [
-            F.linear(torch.from_numpy(t).float(), proj_w, proj_b).numpy() for t in self.assets["emb_tables"]
-        ]
+        for i in range(16):
+            emb_table = np.load(os.path.join(self.model_dir, f"codec_embedding_{i}.npy"))
+            self.assets["emb_tables"].append(emb_table)
+            # 预投影加速 (Numpy 矩阵乘法替代 torch.nn.functional.linear)
+            pw = self.assets["proj"]["weight"]
+            pb = self.assets["proj"]["bias"]
+            self.assets["emb_tables_1024"].append(emb_table @ pw.T + pb)
+            
+        self.assets["tts_pad"] = self.assets["text_table"][151671]
         
         self.tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path, trust_remote_code=True, fix_mistral_regex=True)
         print("  ✅ 资产加载完成。")
@@ -294,8 +305,9 @@ class Qwen3TTS:
             # Craftsman
             c_s = time.time()
             step_codes, step_emb_2048 = [code_0], [self.assets["emb_tables"][0][code_0].copy()]
-            proj_assets = self.assets["proj"]
-            m_h_1024 = m_hidden @ proj_assets["weight"].float().numpy().T + proj_assets["bias"].float().numpy()
+            proj = self.assets["proj"]
+            # NumPy 投影: 2048 -> 1024 (矩阵乘法)
+            m_h_1024 = m_hidden @ proj["weight"].T + proj["bias"]
             c_in = np.stack([m_h_1024, self.assets["emb_tables_1024"][0][code_0]], axis=0)
             
             nano_llama.llama_memory_clear(nano_llama.llama_get_memory(self.c_ctx), True)

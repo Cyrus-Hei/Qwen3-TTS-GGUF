@@ -1,12 +1,13 @@
 import os
 import json
 import torch
+import numpy as np
 from safetensors.torch import save_file, load_file
 
 def extract_craftsman_hf_advanced():
     PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
     MODEL_PATH = os.path.join(PROJECT_ROOT, "Qwen3-TTS-12Hz-1.7B-CustomVoice", "model.safetensors")
-    OUTPUT_DIR = os.path.join(PROJECT_ROOT, "model", "craftsman_advanced_hf")
+    OUTPUT_DIR = os.path.join(PROJECT_ROOT, "model", "craftsman_hf")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     print(f"--- 正在提取高级工匠权重 (15组表全量拼接) ---")
@@ -80,6 +81,11 @@ def extract_craftsman_hf_advanced():
     
     with open(os.path.join(OUTPUT_DIR, "config.json"), "w") as f:
         json.dump(config, f, indent=2)
+        
+    # 6. 为推理提供 Numpy 资产 (免 Torch)
+    np.save(os.path.join(OUTPUT_DIR, "proj_weight.npy"), proj_w.float().numpy())
+    np.save(os.path.join(OUTPUT_DIR, "proj_bias.npy"), proj_b.float().numpy())
+    print(f"📊 额外导出 Numpy 投影层资产至: {OUTPUT_DIR}")
         
     print(f"✅ 高级工匠 HF 格式提取完成: {OUTPUT_DIR}")
 

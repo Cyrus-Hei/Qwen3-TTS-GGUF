@@ -3,7 +3,7 @@ import json
 
 def create_craftsman_tokenizer_advanced():
     PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-    TARGET_DIR = os.path.join(PROJECT_ROOT, "model", "craftsman_advanced_hf")
+    TARGET_DIR = os.path.join(PROJECT_ROOT, "model", "craftsman_hf")
     os.makedirs(TARGET_DIR, exist_ok=True)
     
     print(f"--- 正在构造高级工匠迷你分词器 (目标覆盖 30720 范围) ---")

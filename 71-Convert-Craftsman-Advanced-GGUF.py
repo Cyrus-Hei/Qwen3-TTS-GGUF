@@ -31,8 +31,8 @@ def patched_load_hparams(dir_model: Path, is_mistral_format: bool):
 
 # 4. 转换主逻辑
 def main():
-    CRAFTSMAN_DIR = os.path.join(PROJECT_ROOT, "model", "craftsman_advanced_hf")
-    GGUF_OUT = os.path.join(PROJECT_ROOT, "model", "qwen3_tts_craftsman_advanced.gguf")
+    CRAFTSMAN_DIR = os.path.join(PROJECT_ROOT, "model", "craftsman_hf")
+    GGUF_OUT = os.path.join(PROJECT_ROOT, "model", "qwen3_tts_craftsman.gguf")
 
     print(f"--- 正在将高级工匠组件 (30720词表) 转换为 GGUF ---")
     print(f"源目录: {CRAFTSMAN_DIR}")
