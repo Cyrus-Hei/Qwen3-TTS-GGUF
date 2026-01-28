@@ -6,7 +6,7 @@ import sounddevice as sd
 import onnxruntime as ort
 import time
 from transformers import AutoTokenizer
-import qwen3_tts_gguf.nano_llama as nano_llama
+import qwen3_tts_gguf.llama as llama
 from qwen3_tts_gguf import logger
 
 # os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -60,8 +60,8 @@ class Qwen3TTS:
             "craftsman_gguf": os.path.join(self.model_dir, "qwen3_tts_craftsman.gguf"),
             "mouth_onnx": os.path.join(self.model_dir, "qwen3_tts_decoder.onnx"),
             "text_table": os.path.join(self.model_dir, "text_embedding_projected.npy"),
-            "proj_w": os.path.join(self.model_dir, "craftsman_hf/proj_weight.npy"),
-            "proj_b": os.path.join(self.model_dir, "craftsman_hf/proj_bias.npy")
+            "proj_w": os.path.join(self.model_dir, "proj_weight.npy"),
+            "proj_b": os.path.join(self.model_dir, "proj_bias.npy")
         }
         
         print("[Engine] 正在启动初始化流程...")
@@ -97,26 +97,26 @@ class Qwen3TTS:
     def init_engines(self):
         """初始化 GGUF 与 ONNX 引擎"""
         print("  - 正在通过 Vulkan 挂载 GPU 引擎...")
-        self.m_model = nano_llama.load_model(self.paths["master_gguf"], n_gpu_layers=-1)
-        self.c_model = nano_llama.load_model(self.paths["craftsman_gguf"], n_gpu_layers=-1)
+        self.m_model = llama.load_model(self.paths["master_gguf"], n_gpu_layers=-1)
+        self.c_model = llama.load_model(self.paths["craftsman_gguf"], n_gpu_layers=-1)
         
         # 上下文初始化 (持久化)
-        m_params = nano_llama.llama_context_default_params()
+        m_params = llama.llama_context_default_params()
         m_params.n_ctx = 4096
         m_params.embeddings = True
-        self.m_ctx = nano_llama.llama_init_from_model(self.m_model, m_params)
+        self.m_ctx = llama.llama_init_from_model(self.m_model, m_params)
         
-        c_params = nano_llama.llama_context_default_params()
+        c_params = llama.llama_context_default_params()
         c_params.n_ctx = 512
         c_params.embeddings = False
-        self.c_ctx = nano_llama.llama_init_from_model(self.c_model, c_params)
+        self.c_ctx = llama.llama_init_from_model(self.c_model, c_params)
         
         # 口腔解码器
         self.mouth_sess = ort.InferenceSession(self.paths["mouth_onnx"], providers=['CPUExecutionProvider'])
         
         # Batch 初始化
-        self.m_batch = nano_llama.llama_batch_init(4096, 2048, 1)
-        self.c_batch = nano_llama.llama_batch_init(32, 1024, 1)
+        self.m_batch = llama.llama_batch_init(4096, 2048, 1)
+        self.c_batch = llama.llama_batch_init(32, 1024, 1)
         print("  ✅ 引擎初始化成功。环境已就绪。")
 
     def _sample(self, logits, temperature=1.0, top_p=1.0, top_k=0):
@@ -176,13 +176,35 @@ class Qwen3TTS:
         """
         if verbose: print(f"\n[Synthesizer] 目标文本: {text} | 说话人: {speaker_id} | 语言: {language}")
         start_time = time.time()
-        
-        # 0. 映射参数
-        real_spk_id = self.SPEAKER_MAP.get(speaker_id.lower(), speaker_id) if isinstance(speaker_id, str) else speaker_id
+
+        # 0. 映射与验证参数
+        # 0.1 语言验证
+        if isinstance(language, str):
+            real_lang_id = self.LANGUAGE_MAP.get(language.lower())
+            if real_lang_id is None:
+                raise ValueError(f"❌ 未知的语言名称: {language}。可选: {list(self.LANGUAGE_MAP.keys())}")
+        elif isinstance(language, int):
+            if not (2048 <= language <= 2147):
+                raise ValueError(f"❌ 语言 ID {language} 超出合理范围 (2048-2147)")
+            real_lang_id = language
+        else:
+            raise TypeError(f"❌ 语言参数类型错误: {type(language)}")
+
+        # 0.2 说话人验证
+        if isinstance(speaker_id, str):
+            real_spk_id = self.SPEAKER_MAP.get(speaker_id.lower())
+            if real_spk_id is None:
+                raise ValueError(f"❌ 未知的说话人名称: {speaker_id}。可选: {list(self.SPEAKER_MAP.keys())}")
+        elif isinstance(speaker_id, int):
+            if not (2861 <= speaker_id <= 3071):
+                raise ValueError(f"❌ 说话人 ID {speaker_id} 超出合理范围 (2861-3071)")
+            real_spk_id = speaker_id
+        else:
+            raise TypeError(f"❌ 说话人参数类型错误: {type(speaker_id)}")
         
         # 1. 编译 Prompt
         p_start = time.time()
-        prompt_embeds = self._construct_prompt(text, real_spk_id, language)
+        prompt_embeds = self._construct_prompt(text, real_spk_id, real_lang_id)
         p_time = time.time() - p_start
         
         # 2. 推理
@@ -236,9 +258,8 @@ class Qwen3TTS:
 
     # --- 内部组件 ---
 
-    def _construct_prompt(self, text, spk_id, lang="chinese"):
+    def _construct_prompt(self, text, spk_id, lang_id=2055):
         ids = self.tokenizer.encode(text, add_special_tokens=False)
-        lang_id = self.LANGUAGE_MAP.get(lang.lower(), 2055)
         
         # 官方构造逻辑: IM_START -> SYSTEM -> [CODEC_THINK -> CODEC_THINK_BOS -> LANG -> CODEC_THINK_EOS -> SPK] -> BOS
         # 注意: 151671 是文本侧的 PAD，通常作为背景载体叠加 Codec IDs
@@ -264,7 +285,7 @@ class Qwen3TTS:
 
     def _execute_inference(self, prompt, max_steps, verbose, sampling_config):
         # 清理大师记忆
-        nano_llama.llama_memory_clear(nano_llama.llama_get_memory(self.m_ctx), True)
+        llama.llama_memory_clear(llama.llama_get_memory(self.m_ctx), True)
         
         stats = {"master_time": 0, "craftsman_time": 0, "feedback_time": 0}
         
@@ -279,11 +300,11 @@ class Qwen3TTS:
         for i in range(n_p):
             self.m_batch.pos[i], self.m_batch.pos[n_p+i], self.m_batch.pos[2*n_p+i], self.m_batch.pos[3*n_p+i] = i, i, i, 0
             self.m_batch.n_seq_id[i], self.m_batch.seq_id[i][0], self.m_batch.logits[i] = 1, 0, 1
-        nano_llama.llama_decode(self.m_ctx, self.m_batch)
+        llama.llama_decode(self.m_ctx, self.m_batch)
         
         # 直接从 GGUF 提取 Hidden 和 Logits
-        m_hidden = np.ctypeslib.as_array(nano_llama.llama_get_embeddings(self.m_ctx), shape=(n_p, 2048))[-1].copy()
-        m_logits = np.ctypeslib.as_array(nano_llama.llama_get_logits(self.m_ctx), shape=(n_p, 3072))[-1].copy()
+        m_hidden = np.ctypeslib.as_array(llama.llama_get_embeddings(self.m_ctx), shape=(n_p, 2048))[-1].copy()
+        m_logits = np.ctypeslib.as_array(llama.llama_get_logits(self.m_ctx), shape=(n_p, 3072))[-1].copy()
         
         cur_pos, all_codes = n_p, []
         stats["prefill_time"] = time.time() - pre_start
@@ -310,14 +331,14 @@ class Qwen3TTS:
             m_h_1024 = m_hidden @ proj["weight"].T + proj["bias"]
             c_in = np.stack([m_h_1024, self.assets["emb_tables_1024"][0][code_0]], axis=0)
             
-            nano_llama.llama_memory_clear(nano_llama.llama_get_memory(self.c_ctx), True)
+            llama.llama_memory_clear(llama.llama_get_memory(self.c_ctx), True)
             self.c_batch.n_tokens = 2
             ctypes.memmove(self.c_batch.embd, c_in.ctypes.data, c_in.nbytes)
             for j in range(2):
                 self.c_batch.pos[j], self.c_batch.n_seq_id[j], self.c_batch.seq_id[j][0], self.c_batch.logits[j] = j, 1, 0, (1 if j == 1 else 0)
-            nano_llama.llama_decode(self.c_ctx, self.c_batch)
+            llama.llama_decode(self.c_ctx, self.c_batch)
             
-            last_logits = np.ctypeslib.as_array(nano_llama.llama_get_logits(self.c_ctx), shape=(1, 30720))[0]
+            last_logits = np.ctypeslib.as_array(llama.llama_get_logits(self.c_ctx), shape=(1, 30720))[0]
             
             for cs in range(1, 16):
                 logits_slice = last_logits[(cs-1)*2048 : (cs-1)*2048 + 2048]
@@ -334,8 +355,8 @@ class Qwen3TTS:
                 if cs < 15:
                     self.c_batch.n_tokens, self.c_batch.pos[0], self.c_batch.logits[0] = 1, cs+1, 1
                     ctypes.memmove(self.c_batch.embd, self.assets["emb_tables_1024"][cs][c].ctypes.data, 4096)
-                    nano_llama.llama_decode(self.c_ctx, self.c_batch)
-                    last_logits = np.ctypeslib.as_array(nano_llama.llama_get_logits(self.c_ctx), shape=(30720,))
+                    llama.llama_decode(self.c_ctx, self.c_batch)
+                    last_logits = np.ctypeslib.as_array(llama.llama_get_logits(self.c_ctx), shape=(30720,))
             stats["craftsman_time"] += (time.time() - c_s)
             
             all_codes.append(step_codes)
@@ -347,11 +368,11 @@ class Qwen3TTS:
             ctypes.memmove(self.m_batch.embd, summed.ctypes.data, summed.nbytes)
             self.m_batch.pos[0] = self.m_batch.pos[1] = self.m_batch.pos[2] = cur_pos
             self.m_batch.pos[3], self.m_batch.logits[0], cur_pos = 0, 1, cur_pos + 1
-            nano_llama.llama_decode(self.m_ctx, self.m_batch)
+            llama.llama_decode(self.m_ctx, self.m_batch)
             
             # 更新下一轮所需的 Hidden 与 Logits
-            m_hidden = np.ctypeslib.as_array(nano_llama.llama_get_embeddings(self.m_ctx), shape=(1, 2048))[0].copy()
-            m_logits = np.ctypeslib.as_array(nano_llama.llama_get_logits(self.m_ctx), shape=(1, 3072))[0].copy()
+            m_hidden = np.ctypeslib.as_array(llama.llama_get_embeddings(self.m_ctx), shape=(1, 2048))[0].copy()
+            m_logits = np.ctypeslib.as_array(llama.llama_get_logits(self.m_ctx), shape=(1, 3072))[0].copy()
             
             # 将反馈耗时归入大师，因为这本质上是大师接受输入的过程
             stats["master_time"] += (time.time() - f_s)
@@ -369,19 +390,19 @@ class Qwen3TTS:
 
     def __del__(self):
         try:
-            nano_llama.llama_batch_free(self.m_batch)
-            nano_llama.llama_batch_free(self.c_batch)
-            nano_llama.llama_free(self.m_ctx)
-            nano_llama.llama_free(self.c_ctx)
-            nano_llama.llama_model_free(self.m_model)
-            nano_llama.llama_model_free(self.c_model)
+            llama.llama_batch_free(self.m_batch)
+            llama.llama_batch_free(self.c_batch)
+            llama.llama_free(self.m_ctx)
+            llama.llama_free(self.c_ctx)
+            llama.llama_model_free(self.m_model)
+            llama.llama_model_free(self.c_model)
         except: pass
 
 if __name__ == "__main__":
     tts = Qwen3TTS()
-    TARGET_TEXT = "你好，我是具有随机性的千问3-TTS。这是我的终极进化形态。"
-    SPEAKER = "serena"
-    LANGUAGE = "chinese"
+    TARGET_TEXT = "你好，我是千问3-TTS，很高兴遇见你，你今天过得好吗？"
+    SPEAKER = 3066 # serena
+    LANGUAGE = 2055 # Chinese
     
     wav = tts.synthesize(TARGET_TEXT, speaker_id=SPEAKER, language=LANGUAGE, max_steps=400, verbose=True, 
                          temperature=0.9, subtalker_temperature=0.9, play=True)

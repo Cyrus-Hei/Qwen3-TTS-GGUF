@@ -4,7 +4,7 @@ import torch
 from qwen3_tts_gguf import logger
 from qwen3_tts_gguf.codec_export import CodecEncoderExportWrapper
 # 确保导入的是本地的 model definition (它现在使用 Internal Mimi)
-from qwen3_tts_gguf.modeling_tokenizer import Qwen3TTSTokenizerV2Model
+from qwen3_tts_gguf.tokenizer_12hz.modeling_tokenizer import Qwen3TTSTokenizerV2Model
 
 # 添加项目根目录到 sys.path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))

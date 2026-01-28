@@ -4,7 +4,7 @@ from . import logger
 
 # 引入本地模型定义
 try:
-    from .modeling_tokenizer import Qwen3TTSTokenizerV2Model
+    from .tokenizer_12hz.modeling_tokenizer import Qwen3TTSTokenizerV2Model
 except ImportError:
     Qwen3TTSTokenizerV2Model = None
     logger.warning("Could not import Qwen3TTSTokenizerV2Model from .modeling_tokenizer")
