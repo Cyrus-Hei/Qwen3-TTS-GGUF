@@ -298,6 +298,133 @@ class StatefulCodecExportWrapper(nn.Module):
             
         return final_wav, next_pkv, next_latent, next_conv_hist, next_pre_conv_hist
 
+class StatefulCodecONNXWrapper(nn.Module):
+    """
+    Qwen3-TTS Stateful Decoder ONNX 导出专用包装类 (无 IF 分支版本)。
+    
+    【去 IF 核心设计】：
+    1. 移除 None：所有历史/缓存输入必须是具有正确维度(如 D, 0 或 D, N)的 Tensor。
+    2. 移除布尔：使用 torch.Tensor(0.0 或 1.0) 作为 is_last 标志。
+    3. 移除分支：利用 torch.cat 自动处理空 Tensor 拼接。
+    4. 移除对象：由于 ONNX 不支持 DynamicCache 对象，直接传入和返回展平的 K/V Tensor 列表。
+    """
+    
+    LOOKAHEAD_FRAMES = 4
+    PRE_CONV_HISTORY_WINDOW = 2
+    CONV_HISTORY_WINDOW = 4
+    KV_CACHE_WINDOW_SIZE = 72
+
+    def __init__(self, model: Qwen3TTSTokenizerV2Model):
+        super().__init__()
+        self.decoder = model.decoder
+        self.config = model.config
+        self.decoder.eval()
+        self.samples_per_frame = self.config.decode_upsample_rate
+        
+        # 预探测必要的配置
+        self.num_layers = self.decoder.config.num_hidden_layers
+
+    def forward(self, 
+                audio_codes: torch.Tensor, 
+                is_last: torch.Tensor,
+                pre_conv_history: torch.Tensor,
+                latent_buffer: torch.Tensor,
+                conv_history: torch.Tensor,
+                *past_key_values_flat # 传入 2 * num_layers 个 Tensor (k0, v0, k1, v1...)
+                ):
+        """
+        全量算子化 forward。
+        """
+        B, N, Q = audio_codes.shape
+        device = audio_codes.device
+        
+        # 1. 码本处理
+        codes = audio_codes.transpose(1, 2)
+        quantized = self.decoder.quantizer.decode(codes)
+        
+        # 拼接预处理层历史 (无需 if，空 Tensor cat 依然正确)
+        quant_full = torch.cat([pre_conv_history, quantized], dim=-1)
+        h_quant_len = pre_conv_history.shape[-1]
+        
+        # 执行 pre_conv
+        hidden_all = self.decoder.pre_conv(quant_full)
+        hidden = hidden_all[:, :, h_quant_len:].transpose(1, 2)
+        
+        # 保存新的 pre_conv 历史 (恒切最后 2 帧，哪怕总长不足 2 也会自动返回全部)
+        next_pre_conv_hist = quantized[:, :, -self.PRE_CONV_HISTORY_WINDOW:]
+        
+        # 2. KV Cache 组装 (为了适配 pre_transformer 的接口)
+        from transformers.cache_utils import DynamicCache
+        pkv = DynamicCache()
+        for i in range(self.num_layers):
+            pkv.update(past_key_values_flat[2*i], past_key_values_flat[2*i+1], i)
+            
+        # 3. Transformer 推断
+        outputs = self.decoder.pre_transformer(
+            inputs_embeds=hidden,
+            past_key_values=pkv,
+            use_cache=True
+        )
+        new_hidden = outputs.last_hidden_state.transpose(1, 2)
+        pkv = outputs.past_key_values
+        
+        # --- KV 负索引裁剪 (无 IF) ---
+        pkv.crop(self.KV_CACHE_WINDOW_SIZE)
+            
+        # 4. Latent Buffer 与卷积对齐
+        accumulated = torch.cat([latent_buffer, new_hidden], dim=-1)
+        total_acc_frames = accumulated.shape[-1]
+        
+        # 计算确定可下发的帧数 (使用 torch.where 代替 if)
+        # is_last = 1.0 表示最后一段，0.0 表示正常流
+        num_finalize = torch.where(is_last > 0.5, 
+                                 torch.tensor(float(total_acc_frames), device=device), 
+                                 torch.max(torch.tensor(0.0, device=device), 
+                                         torch.tensor(float(total_acc_frames - self.LOOKAHEAD_FRAMES), device=device)))
+        num_finalize = num_finalize.long()
+        
+        # 准备输出采样点范围
+        h_conv_len = conv_history.shape[-1]
+        start_samples = h_conv_len * self.samples_per_frame
+        end_samples = start_samples + num_finalize * self.samples_per_frame
+        
+        # 5. 卷积链准备
+        # 下一轮的 Latent Buffer (始终保留最后 4 帧)
+        next_latent_buf = accumulated[:, :, -self.LOOKAHEAD_FRAMES:]
+        
+        # 输入卷积链：历史 + 当前积压数据。
+        # 逻辑：历史 + 积压区
+        conv_chain_input = torch.cat([conv_history, accumulated], dim=-1)
+        
+        # 6. 执行卷积链推理
+        curr = conv_chain_input
+        for blocks in self.decoder.upsample:
+            for block in blocks: curr = block(curr)
+        for block in self.decoder.decoder:
+            curr = block(curr)
+            
+        wav = curr.squeeze(1).clamp(min=-1, max=1)
+        
+        # 7. 切片截取音频
+        # 利用 slice 语法 [start:end]，若 start == end 则返回 [1, 0] 空音频，无报错
+        # 由于 end_samples 可能超过实际 wav 长度(最后一跳)，使用 clamp 保护
+        actual_end = torch.min(torch.tensor(float(wav.shape[-1]), device=device), end_samples.float()).long()
+        final_wav = wav[:, start_samples : actual_end]
+        
+        # 8. 更新下一次的卷积历史 (始终保留最后 4 帧)
+        # 即使 num_finalize 很大，最后的 finalize_hidden 部分切片依然正确
+        finalize_hidden = accumulated[:, :, :num_finalize]
+        next_conv_hist = finalize_hidden[:, :, -self.CONV_HISTORY_WINDOW:]
+        
+        # 9. 展平 KV 列表作为返回值
+        next_pkv_flat = []
+        for i in range(self.num_layers):
+            ki, vi = pkv[i]
+            next_pkv_flat.append(ki)
+            next_pkv_flat.append(vi)
+            
+        return (final_wav, next_pre_conv_hist, next_latent_buf, next_conv_hist) + tuple(next_pkv_flat)
+
 class SpeakerEncoderExportWrapper(nn.Module):
     """
     Qwen3-TTS 说话人编码器导出包装类。
