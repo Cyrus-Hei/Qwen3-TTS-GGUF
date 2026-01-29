@@ -1,89 +1,140 @@
+"""
+85-Export-Stateful-ONNX.py
+Qwen3-TTS Stateful Codec Decoder ONNX 导出脚本。
+
+核心经验参考：Experience/01-Qwen3-Code-Predictor-Export.md
+- 强制 dynamo=False 使用经典 JIT 路径
+- 显式参数签名避免 TreeSpec 校验失败
+- Dummy Input 维度必须与模型权重对齐
+"""
 import os
-import sys
 import torch
-from qwen3_tts_gguf import logger
-from qwen3_tts_gguf.codec_export import CodecExportWrapper
+import numpy as np
+from qwen3_tts_gguf.codec_export import StatefulCodecONNXWrapper
 from qwen3_tts_gguf.tokenizer_12hz.modeling_tokenizer import Qwen3TTSTokenizerV2Model
 
-
-# 添加项目根目录到 sys.path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "Qwen3-TTS"))
-
 def main():
-    # 1. 配置路径
-    MODEL_DIR = r'./Qwen3-TTS-12Hz-1.7B-CustomVoice'
-    OUTPUT_DIR = r'./model'
-    ONNX_PATH = os.path.join(OUTPUT_DIR, 'qwen3_tts_decoder.onnx')
-    
+    # 1. 配置
+    MODEL_PATH = "./Qwen3-TTS-12Hz-1.7B-CustomVoice"
+    OUTPUT_DIR = "model"
+    ONNX_FILENAME = "qwen3_tts_decoder_stateful.onnx"
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
-    # 路径检测逻辑
-    logger.info(f"正在加载模型: {MODEL_DIR}")
-    tokenizer_model_dir = os.path.join(MODEL_DIR, "speech_tokenizer")
-    load_path = tokenizer_model_dir if os.path.exists(tokenizer_model_dir) else MODEL_DIR
-    if load_path != MODEL_DIR:
-        logger.info(f"检测到 speech_tokenizer 子目录，使用: {load_path}")
+    device = "cpu"
     
-    # 2. 加载 PyTorch 模型
-    try:
-        model = Qwen3TTSTokenizerV2Model.from_pretrained(load_path)
-        model.eval()
-    except Exception as e:
-        logger.error(f"加载模型失败: {e}")
-        return
+    # 2. 加载模型
+    print("🚀 正在加载模型...")
+    tokenizer_load_path = os.path.join(MODEL_PATH, "speech_tokenizer") if os.path.exists(os.path.join(MODEL_PATH, "speech_tokenizer")) else MODEL_PATH
+    model = Qwen3TTSTokenizerV2Model.from_pretrained(tokenizer_load_path).to(device)
+    wrapper = StatefulCodecONNXWrapper(model).to(device)
+    wrapper.eval()
+    
+    # 3. 获取关键配置
+    num_layers = wrapper.num_layers
+    # 关键：head_dim 必须从配置中直接读取，而非公式推导！
+    # 模型配置中 hidden_size=512, num_heads=16, 但 head_dim=64 (硬编码)
+    cfg = wrapper.decoder.config
+    num_heads = cfg.num_key_value_heads if hasattr(cfg, 'num_key_value_heads') else cfg.num_attention_heads
+    head_dim = cfg.head_dim  # 直接读取，避免维度陷阱
+    
+    print(f"   num_layers={num_layers}, num_heads={num_heads}, head_dim={head_dim}")
 
-    # 3. 准备导出包装器 (Decoder)
-    logger.info("准备 ONNX 导出包装器 (Decoder)...")
-    decoder_wrapper = CodecExportWrapper(model).eval()
     
-    # 4. Dummy Input
-    num_quantizers = model.config.decoder_config.num_quantizers
-    # Shape: [Batch=1, Time=100, NumQuantizers]
-    dummy_input = torch.randint(0, 1024, (1, 100, num_quantizers), dtype=torch.long)
+    # 4. 创建 Dummy Inputs (显式签名)
+    B = 1
+    N = 3  # 每跳 3 帧
+    Q = 16  # 量化器数量
     
-    # 5. Export
-    logger.info(f"开始导出 Decoder ONNX 到: {ONNX_PATH}")
-    try:
+    dummy_audio_codes = torch.zeros(B, N, Q, dtype=torch.long, device=device)
+    dummy_is_last = torch.tensor([0.0], device=device)
+    dummy_pre_conv_h = torch.zeros(B, 512, 0, device=device) 
+    dummy_latent_buf = torch.zeros(B, 1024, 0, device=device)
+    dummy_conv_h = torch.zeros(B, 1024, 0, device=device)
+    
+    # KV Cache: num_layers 个 K + num_layers 个 V
+    # Shape: [B, num_heads, past_seq, head_dim]
+    dummy_kv = []
+    for _ in range(num_layers):
+        dummy_kv.append(torch.zeros(B, num_heads, 0, head_dim, device=device))  # K
+    for _ in range(num_layers):
+        dummy_kv.append(torch.zeros(B, num_heads, 0, head_dim, device=device))  # V
+
+    
+    # 打包成元组
+    dummy_inputs = (
+        dummy_audio_codes,
+        dummy_is_last,
+        dummy_pre_conv_h,
+        dummy_latent_buf,
+        dummy_conv_h,
+        *dummy_kv
+    )
+    
+    # 5. 定义输入输出名称 (显式签名)
+    input_names = [
+        "audio_codes",
+        "is_last",
+        "pre_conv_history",
+        "latent_buffer",
+        "conv_history",
+    ]
+    for i in range(num_layers):
+        input_names.append(f"past_key_{i}")
+    for i in range(num_layers):
+        input_names.append(f"past_value_{i}")
+    
+    output_names = [
+        "final_wav",
+        "valid_samples",
+        "next_pre_conv_history",
+        "next_latent_buffer",
+        "next_conv_history",
+    ]
+    for i in range(num_layers):
+        output_names.append(f"next_key_{i}")
+    for i in range(num_layers):
+        output_names.append(f"next_value_{i}")
+    
+    # 6. 定义动态维度 (关键)
+    dynamic_axes = {
+        "audio_codes": {1: "num_frames"},  # N
+        "pre_conv_history": {2: "pre_conv_len"},
+        "latent_buffer": {2: "latent_len"},
+        "conv_history": {2: "conv_len"},
+        "final_wav": {1: "wav_len"},
+    }
+    for i in range(num_layers):
+        dynamic_axes[f"past_key_{i}"] = {2: f"past_seq_{i}"}
+        dynamic_axes[f"past_value_{i}"] = {2: f"past_seq_{i}"}
+        dynamic_axes[f"next_key_{i}"] = {2: f"next_seq_{i}"}
+        dynamic_axes[f"next_value_{i}"] = {2: f"next_seq_{i}"}
+    
+    # 7. 导出
+    onnx_path = os.path.join(OUTPUT_DIR, ONNX_FILENAME)
+    print(f"📦 正在导出 ONNX 到: {onnx_path}")
+    print(f"   使用经典 JIT 路径 (dynamo=False)...")
+    
+    with torch.no_grad():
         torch.onnx.export(
-            decoder_wrapper,
-            (dummy_input,),
-            ONNX_PATH,
-            input_names=['audio_codes'],
-            output_names=['audio_values'],
-            dynamic_axes={
-                'audio_codes': {0: 'batch_size', 1: 'sequence_length'},
-                'audio_values': {0: 'batch_size', 1: 'sequence_length'}
-            },
-            opset_version=18, # 最佳实践：使用较新 Opset
-            do_constant_folding=True
+            wrapper,
+            dummy_inputs,
+            onnx_path,
+            input_names=input_names,
+            output_names=output_names,
+            dynamic_axes=dynamic_axes,
+            opset_version=14,
+            do_constant_folding=True,
+            dynamo=False,  # 关键：强制使用经典 JIT 路径
         )
-        logger.info("✅ Decoder ONNX 导出成功！")
-    except Exception as e:
-        logger.error(f"❌ Decoder ONNX 导出失败: {e}")
-        return
-
-    # 6. 验证
-    logger.info("验证导出结果...")
-    try:
-        import onnxruntime
-        import numpy as np
-        
-        sess = onnxruntime.InferenceSession(ONNX_PATH, providers=['CPUExecutionProvider'])
-        
-        with torch.no_grad():
-            torch_out = decoder_wrapper(dummy_input).numpy()
-            
-        onnx_out = sess.run(None, {'audio_codes': dummy_input.numpy()})[0]
-        
-        if np.allclose(torch_out, onnx_out, atol=1e-4):
-            logger.info("数值验证通过！(PyTorch vs ONNX)")
-        else:
-            diff = np.max(np.abs(torch_out - onnx_out))
-            logger.warning(f"数值验证存在差异，最大误差: {diff:.6f}")
-            
-    except ImportError:
-        logger.warning("未安装 onnxruntime，跳过验证。")
+    
+    print(f"✅ ONNX 导出成功！文件大小: {os.path.getsize(onnx_path) / 1024 / 1024:.2f} MB")
+    
+    # 8. 简单验证
+    print("🔍 正在验证 ONNX 模型...")
+    import onnx
+    onnx_model = onnx.load(onnx_path)
+    onnx.checker.check_model(onnx_model)
+    print("✅ ONNX 模型校验通过！")
 
 if __name__ == "__main__":
     main()

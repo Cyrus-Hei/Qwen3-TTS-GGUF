@@ -33,7 +33,7 @@ class Qwen3TTSDoubleStreamEngine:
         self.paths = {
             "master_gguf": os.path.join(self.model_dir, "qwen3_tts_talker.gguf"),
             "craftsman_gguf": os.path.join(self.model_dir, "qwen3_tts_craftsman.gguf"),
-            "mouth_onnx": os.path.join(self.model_dir, "qwen3_tts_decoder.onnx"),
+            "mouth_onnx": os.path.join(self.model_dir, "qwen3_tts_decoder_stateful.onnx"),
             "text_table": os.path.join(self.model_dir, "text_embedding_projected.npy"),
             "proj_w": os.path.join(self.model_dir, "proj_weight.npy"),
             "proj_b": os.path.join(self.model_dir, "proj_bias.npy")
@@ -119,9 +119,9 @@ class Qwen3TTSDoubleStreamEngine:
         cur_pos = len(seq)
         all_generated_codes = []
         last_pushed_idx = 0
-        LEFT_CONTEXT = 72
-        RIGHT_CONTEXT = 4
-        
+        # 新版 stateful decoder 内部会自动管理 lookahead（LOOKAHEAD_FRAMES=4）
+        # 所以我们只需要发送有效帧，不需要额外的 lookahead padding
+
         for step_idx in range(600): # 调高步数限制
             code_0 = self._sample(m_logits)
             if code_0 == 2150: break
@@ -151,16 +151,18 @@ class Qwen3TTSDoubleStreamEngine:
                     last_logits = np.ctypeslib.as_array(llama.llama_get_logits(self.c_ctx), shape=(30720,))
             
             all_generated_codes.append(step_codes)
-            
-            # 检查是否满足推送条件：[历史(自动包含) + Chunk + 未来(4)]
-            # 我们始终在 codes_q 中推送带上下文的一整块
-            if len(all_generated_codes) >= last_pushed_idx + chunk_size + RIGHT_CONTEXT:
-                start = max(0, last_pushed_idx - LEFT_CONTEXT)
-                end = last_pushed_idx + chunk_size + RIGHT_CONTEXT
+
+            # 检查是否满足推送条件：达到 chunk_size
+            # 新版 stateful decoder 内部会自动管理 lookahead 和历史
+            if len(all_generated_codes) >= last_pushed_idx + chunk_size:
+                # 只发送新增的有效帧，不包含 lookahead
+                start = last_pushed_idx
+                end = last_pushed_idx + chunk_size
                 window = all_generated_codes[start:end]
-                self.codes_q.put(list(window))
+                # 使用元组格式 (codes, is_final)，中间 chunk 不是最后一帧
+                self.codes_q.put((list(window), False))
                 last_pushed_idx += chunk_size
-                if verbose: print(f"  └─ 步数 {step_idx+1}: 推送流式分片 (对齐历史={min(last_pushed_idx-chunk_size, LEFT_CONTEXT)})")
+                if verbose: print(f"  └─ 步数 {step_idx+1}: 推送流式分片 (帧 {start}-{end})")
 
             # 反馈给 Master
             summed = np.sum(step_emb_2048, axis=0) + self.assets["tts_pad"].flatten()
@@ -172,13 +174,13 @@ class Qwen3TTSDoubleStreamEngine:
             m_hidden = np.ctypeslib.as_array(llama.llama_get_embeddings(self.m_ctx), shape=(1, 2048))[0].copy()
             m_logits = np.ctypeslib.as_array(llama.llama_get_logits(self.m_ctx), shape=(1, 3072))[0].copy()
 
-        # 推送最后的余量
+        # 推送最后的余量（标记为 FINAL）
         if last_pushed_idx < len(all_generated_codes):
-            start = max(0, last_pushed_idx - LEFT_CONTEXT)
+            # 只发送剩余的新增帧
+            start = last_pushed_idx
             window = all_generated_codes[start:]
-            # 补齐 4 帧 Padding 以确保末端音质
-            padding = [all_generated_codes[-1]] * RIGHT_CONTEXT
-            self.codes_q.put(window + padding)
+            # 使用元组格式 (codes, is_final) 标记最后一帧
+            self.codes_q.put((window, True))
             if verbose: print(f"  └─ 任务完成: 推送末尾余量 (共 {len(all_generated_codes)} 帧)")
 
 

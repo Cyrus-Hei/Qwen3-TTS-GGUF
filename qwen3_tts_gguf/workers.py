@@ -24,62 +24,66 @@ def wav_writer_proc(record_queue, filename, sample_rate=24000):
 
 def decoder_worker_proc(codes_queue, pcm_queue, mouth_onnx_path, record_queue=None):
     """
-    解码工人：支持 CLEAR 信号，实现多段推理的上下文重置。
+    解码工人：使用新版 StatefulMouthDecoder 简化流式解码。
+    支持 CLEAR 信号重置状态，支持 FINAL 信号输出剩余音频。
+    
+    消息协议:
+    - CLEAR: 重置状态（新句子）
+    - FINAL: 标记最后一个 chunk
+    - (codes, is_final): 音频码 + 是否最后一帧
+    - None: 退出
     """
-    import onnxruntime as ort
+    from qwen3_tts_gguf.mouth_decoder import StatefulMouthDecoder
     
-    LEFT_CONTEXT = 72    
-    RIGHT_CONTEXT = 4    
-    UPSAMPLE_RATE = 1920 
-
-    sess = ort.InferenceSession(mouth_onnx_path, providers=['CPUExecutionProvider'])
-    
-    # 状态初始化
-    history_codes = np.zeros((0, 16), dtype=np.int64)
+    # 创建解码器实例
+    decoder = StatefulMouthDecoder(mouth_onnx_path, use_dml=True)
+    print(f"  [DecoderWorker] 已启动 (Provider: {decoder.active_provider})")
     
     try:
         while True:
             task = codes_queue.get()
+            
+            # 退出信号
             if task is None:
                 pcm_queue.put(None)
                 if record_queue: record_queue.put(None)
                 break
             
-            # 处理重置信号
+            # 重置信号
             if isinstance(task, str) and task == "CLEAR":
-                history_codes = np.zeros((0, 16), dtype=np.int64)
-                # 信号透传，确保下游 speaker 也能感知（如果以后需要扩容的话）
-                # 这里暂不透传给 speaker，因为直接切割 PCM 会带来爆音，
-                # 我们希望 Speaker 继续播完 buffer。
+                decoder.reset()
                 if record_queue: record_queue.put("CLEAR")
                 continue
             
-            working_codes = np.array(task).astype(np.int64)
+            # 解析任务
+            if isinstance(task, tuple) and len(task) == 2:
+                codes, is_final = task
+            else:
+                # 兼容旧版：单独的 codes 数组默认不是 final
+                codes = task
+                is_final = False
             
-            # 1. 全量解码
-            c_in = working_codes[np.newaxis, ...].astype(np.int64)
-            full_audio = sess.run(None, {'audio_codes': c_in})[0].squeeze().astype(np.float32)
+            # 转换为 numpy
+            working_codes = np.array(codes).astype(np.int64)
             
-            # 2. 精准定位“干货区”
-            actual_history_steps = min(len(history_codes), LEFT_CONTEXT)
-            start_idx = actual_history_steps * UPSAMPLE_RATE
+            if len(working_codes) == 0:
+                continue
             
-            current_chunk_steps = len(working_codes) - actual_history_steps - RIGHT_CONTEXT
-            n_samples = current_chunk_steps * UPSAMPLE_RATE
+            # 调用新版解码器
+            audio = decoder.decode(working_codes, is_final=is_final)
             
-            # 3. 直接切割
-            output_chunk = full_audio[start_idx : start_idx + n_samples]
-
-            # 4. 交付
-            pcm_queue.put(output_chunk.copy())
-            if record_queue: record_queue.put(output_chunk.copy())
-            
-            # 5. 更新状态
-            history_codes = working_codes[:actual_history_steps + current_chunk_steps][-LEFT_CONTEXT:]
+            # 交付有效音频
+            if len(audio) > 0:
+                pcm_queue.put(audio.copy())
+                if record_queue: record_queue.put(audio.copy())
 
     except Exception as e:
         print(f"  [DecoderWorker] 异常: {e}")
-    finally: pass
+        import traceback
+        traceback.print_exc()
+    finally:
+        pass
+
 
 def speaker_worker_proc(pcm_queue, sample_rate=24000):
     import sounddevice as sd

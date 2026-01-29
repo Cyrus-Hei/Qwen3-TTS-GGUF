@@ -16,7 +16,7 @@ from qwen3_tts_gguf.tokenizer_12hz.modeling_tokenizer import Qwen3TTSTokenizerV2
 def main():
     # 1. 配置
     MODEL_PATH = "./Qwen3-TTS-12Hz-1.7B-CustomVoice"
-    OUTPUT_DIR = "onnx_export"
+    OUTPUT_DIR = "model"
     ONNX_FILENAME = "qwen3_tts_decoder_stateful.onnx"
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     

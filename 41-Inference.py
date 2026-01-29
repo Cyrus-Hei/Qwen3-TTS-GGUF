@@ -49,7 +49,7 @@ class Qwen3TTS:
         "THINK": 2154, "NOTHINK": 2155, "THINK_BOS": 2156, "THINK_EOS": 2157
     }
 
-    def __init__(self, model_root="model-base", tokenizer_path="Qwen3-TTS-12Hz-1.7B-Base"):
+    def __init__(self, model_root="model", tokenizer_path="Qwen3-TTS-12Hz-1.7B-CustomVoice"):
         self.project_root = os.getcwd()
         self.model_dir = os.path.join(self.project_root, model_root)
         self.tokenizer_path = os.path.join(self.project_root, tokenizer_path)
@@ -58,7 +58,7 @@ class Qwen3TTS:
         self.paths = {
             "master_gguf": os.path.join(self.model_dir, "qwen3_tts_talker.gguf"),
             "craftsman_gguf": os.path.join(self.model_dir, "qwen3_tts_craftsman.gguf"),
-            "mouth_onnx": os.path.join(self.model_dir, "qwen3_tts_decoder.onnx"),
+            "mouth_onnx": os.path.join(self.model_dir, "qwen3_tts_decoder_stateful.onnx"),
             "text_table": os.path.join(self.model_dir, "text_embedding_projected.npy"),
             "proj_w": os.path.join(self.model_dir, "proj_weight.npy"),
             "proj_b": os.path.join(self.model_dir, "proj_bias.npy")
@@ -111,8 +111,10 @@ class Qwen3TTS:
         c_params.embeddings = False
         self.c_ctx = llama.llama_init_from_model(self.c_model, c_params)
         
-        # 口腔解码器
-        self.mouth_sess = ort.InferenceSession(self.paths["mouth_onnx"], providers=['CPUExecutionProvider'])
+        # 口腔解码器 (新版状态化解码器，支持 DML 加速)
+        from qwen3_tts_gguf.mouth_decoder import StatefulMouthDecoder
+        self.mouth = StatefulMouthDecoder(self.paths["mouth_onnx"], use_dml=True)
+        print(f"  ✅ 口腔解码器加载完成 (Provider: {self.mouth.active_provider})")
         
         # Batch 初始化
         self.m_batch = llama.llama_batch_init(4096, 2048, 1)
@@ -384,9 +386,10 @@ class Qwen3TTS:
         return all_codes, stats
 
     def _render_audio(self, codes):
+        """渲染音频码为波形（使用新版状态化解码器）"""
         if not codes: return np.array([])
-        c_in = np.array(codes)[np.newaxis, ...].astype(np.int64)
-        return self.mouth_sess.run(None, {'audio_codes': c_in})[0].squeeze()
+        c_in = np.array(codes).astype(np.int64)  # [N, 16]
+        return self.mouth.decode_full(c_in)  # 一次性解码
 
     def __del__(self):
         try:

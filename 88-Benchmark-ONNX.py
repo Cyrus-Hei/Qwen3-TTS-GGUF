@@ -51,7 +51,7 @@ def main():
 
     # 2. 加载新版模型
     print(f"\n📦 正在加载新版模型: {NEW_ONNX_PATH}")
-    new_sess = ort.InferenceSession(NEW_ONNX_PATH, sess_options, providers=['CPUExecutionProvider'])
+    new_sess = ort.InferenceSession(NEW_ONNX_PATH, sess_options, providers=['DmlExecutionProvider'])
     
     # 初始化状态
     def init_new_states():
@@ -148,7 +148,7 @@ def main():
     
     if avg_old_once > 0:
         speedup = avg_old_once / avg_new_once
-        print(f"🚀 新版(一次性) 相比旧版 加速了: {speedup:.2fx}")
+        print(f"🚀 新版(一次性) 相比旧版 加速了: {speedup:.2f}x")
         print(f"💡 流式开销比 (S25 vs Once): {(avg_new_s25/avg_new_once - 1)*100:.1f}%")
         print(f"💡 流式开销比 (S12 vs Once): {(avg_new_s12/avg_new_once - 1)*100:.1f}%")
     print("="*50)

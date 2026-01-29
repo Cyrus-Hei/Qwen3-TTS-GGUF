@@ -7,14 +7,12 @@ if __name__ == "__main__":
     
     print("✅ 推理引擎加载完成。")
     engine = Qwen3TTSDoubleStreamEngine()
-    print("🚀 引擎已就绪。")
+    input("🚀 引擎已就绪。")
     
-    text = "您好，欢迎体验千问3-TTS流式推理。这不仅是在测试模型，更是在测试生产级别的异步消费架构。"
-    engine.synthesize(text, speaker_id="vivian", chunk_size=50)
+    text = "你好，我是千问3-TTS，很高兴遇见你，你今天过得好吗？"
+    engine.synthesize(text, speaker_id="vivian", chunk_size=25)
 
-    text = "观众老爷们觉得怎么样呢？"
-    engine.synthesize(text, speaker_id="vivian", chunk_size=50)
     
     print("🎵 正在播放，请等待...")
-    time.sleep(15)
+    time.sleep(10)
     engine.shutdown()
