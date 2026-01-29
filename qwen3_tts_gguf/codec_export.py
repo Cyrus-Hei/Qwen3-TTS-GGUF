@@ -115,6 +115,67 @@ class CodecExportWrapper(nn.Module):
         # Output: [B, 1, T] -> [B, T]
         return wav.squeeze(1)
 
+class StreamingCodecExportWrapper(nn.Module):
+    """
+    Qwen3-TTS 音频解码器流式验证包装类。
+    内部模拟逐帧/逐片推理，手动管理状态，但对外接口保持为 (audio_codes)。
+    用于验证有状态拆解逻辑是否与原版等价。
+    """
+    def __init__(self, model: Qwen3TTSTokenizerV2Model):
+        super().__init__()
+        self.decoder = model.decoder
+        self.config = model.config
+        self.decoder.eval()
+
+    def forward(self, audio_codes):
+        """
+        验证逻辑：
+        1. 内部模拟逐帧调用 Transformer 并传递 KV Cache。
+        2. 卷积层暂时保持全序列处理（因为卷积状态的管理逻辑在下一阶段）。
+        """
+        # 1. 映射为向量 [B, Q, T]
+        codes = audio_codes.transpose(1, 2)
+        hidden = self.decoder.quantizer.decode(codes)
+        
+        # 2. 初步卷积处理 [B, Hidden, T] -> [B, T, Hidden]
+        hidden = self.decoder.pre_conv(hidden).transpose(1, 2)
+        
+        # 3. 核心：模拟流式 Transformer 缓存机制
+        from transformers.cache_utils import DynamicCache
+        B, T, H = hidden.shape
+        past_key_values = DynamicCache()
+        all_hidden = []
+        
+        for i in range(T):
+            # 逐帧取特征
+            frame_hidden = hidden[:, i:i+1, :]
+            # position_ids 会在 pre_transformer 内部根据 past_key_values 长度自动计算
+            outputs = self.decoder.pre_transformer(
+                inputs_embeds=frame_hidden,
+                past_key_values=past_key_values,
+                use_cache=True
+            )
+            all_hidden.append(outputs.last_hidden_state)
+            past_key_values = outputs.past_key_values
+            
+        # 合并 Transformer 的输出 [B, T, Hidden]
+        hidden = torch.cat(all_hidden, dim=1)
+        
+        # 4. 后续卷积与上采样流水线
+        hidden = hidden.permute(0, 2, 1) # [B, Hidden, T]
+        
+        # 依次通过 DecoderDecoderBlock
+        for blocks in self.decoder.upsample:
+            for block in blocks:
+                hidden = block(hidden)
+        
+        wav = hidden
+        for block in self.decoder.decoder:
+            wav = block(wav)
+            
+        # 返回波形 [B, T_audio]
+        return wav.squeeze(1).clamp(min=-1, max=1)
+
 class SpeakerEncoderExportWrapper(nn.Module):
     """
     Qwen3-TTS 说话人编码器导出包装类。
