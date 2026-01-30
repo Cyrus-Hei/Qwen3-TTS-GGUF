@@ -49,6 +49,6 @@ if not logger.handlers:
 # 导出核心模块
 from .llama import init_llama_lib
 from .engine import TTSEngine
-from .result import SynthesisResult
+from .result import TTSResult
 
-__all__ = ['logger', 'init_llama_lib', 'TTSEngine', 'SynthesisResult']
+__all__ = ['logger', 'init_llama_lib', 'TTSEngine', 'TTSResult']

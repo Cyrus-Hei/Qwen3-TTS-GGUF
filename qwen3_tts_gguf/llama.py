@@ -131,7 +131,7 @@ def init_llama_lib():
     global llama_context_default_params, llama_init_from_model, llama_free
     global llama_batch_init, llama_batch_free
     global llama_decode, llama_get_logits, llama_set_embeddings, llama_get_embeddings, llama_tokenize
-    global llama_get_memory, llama_memory_clear, llama_model_n_embd
+    global    llama_get_memory, llama_memory_clear, llama_model_n_embd
     global llama_vocab_n_tokens, llama_vocab_eos, llama_token_to_piece
     global _log_callback_ref
 

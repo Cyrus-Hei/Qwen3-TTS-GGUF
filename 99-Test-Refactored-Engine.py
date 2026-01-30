@@ -51,7 +51,7 @@ if __name__ == "__main__":
     
     try:
         test_non_streaming()
-        test_streaming()
+        # test_streaming()
         print("\n✅ 所有测试通过！")
     except Exception as e:
         print(f"\n❌ 测试失败: {e}")

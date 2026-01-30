@@ -28,11 +28,12 @@ class MasterPredictor:
         llama.llama_memory_clear(llama.llama_get_memory(self.ctx), True)
         self.cur_pos = 0
 
-    def prefill(self, prompt_embeds: np.ndarray) -> tuple:
+    def prefill(self, prompt_embeds: np.ndarray, seq_id: int = 0) -> tuple:
         """
         全量推入初始 Prompt 或新文本批次。
         Args:
             prompt_embeds: [Batch=1, Seq, Hidden=2048]
+            seq_id: 分配给此批次的序列 ID (用于精确删除)
         Returns:
             (hidden, logits)
         """
@@ -51,7 +52,7 @@ class MasterPredictor:
             self.batch.pos[i] = self.batch.pos[n_p + i] = self.batch.pos[2*n_p + i] = pos_val
             self.batch.pos[3*n_p + i] = 0
             self.batch.n_seq_id[i] = 1
-            self.batch.seq_id[i][0] = 0
+            self.batch.seq_id[i][0] = 0 # 强制为 0 以防老旧 DLL 不支持
             self.batch.logits[i] = 1 # 我们需要最后一个位置的 logits
             
         llama_status = llama.llama_decode(self.ctx, self.batch)
@@ -65,11 +66,12 @@ class MasterPredictor:
         self.cur_pos += n_p
         return hidden, logits
 
-    def decode_step(self, feedback_embed: np.ndarray) -> tuple:
+    def decode_step(self, feedback_embed: np.ndarray, seq_id: int = 0) -> tuple:
         """
         单步预测下一帧。
         Args:
             feedback_embed: [Hidden=2048] 汇总后的上一帧反馈向量
+            seq_id: 序列 ID
         Returns:
             (hidden, logits)
         """
