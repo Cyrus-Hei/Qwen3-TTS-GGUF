@@ -55,9 +55,9 @@ class TTSEngine:
             
         logger.info("✅ [Engine] GGUF 模型加载完成。")
 
-    def create_stream(self, speaker_id="vivian", language="chinese", n_ctx=4096) -> TTSStream:
+    def create_stream(self, n_ctx=4096) -> TTSStream:
         """工厂方法：创建语音流"""
-        return TTSStream(self, speaker_id, language, n_ctx=n_ctx)
+        return TTSStream(self, n_ctx=n_ctx)
 
     def _do_sample(self, logits, temperature):
         """引擎内部采样辅助 (供 Stream 调用)"""

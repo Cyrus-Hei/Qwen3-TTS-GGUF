@@ -24,6 +24,21 @@ class Timing:
                 self.mouth_render_time)
 
 @dataclass
+class LoopOutput:
+    """推理内核循环的输出封装"""
+    all_codes: List[List[int]]     # 所有生成的 Codec IDs
+    summed_embeds: List[np.ndarray] # 叠加特征序列
+    timing: Timing                  # 性能统计对象
+
+@dataclass
+class GenConfig:
+    """推理控制参数封装"""
+    temperature: float = 0.5
+    max_steps: int = 600
+    top_p: float = 1.0
+    top_k: int = 50
+
+@dataclass
 class TTSResult:
     """TTS 合成全量结果"""
     audio: np.ndarray              # 音频数据 (PCM float32)

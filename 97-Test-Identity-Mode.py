@@ -9,6 +9,7 @@ import numpy as np
 sys.path.append(os.getcwd())
 
 from qwen3_tts_gguf.engine import TTSEngine
+from qwen3_tts_gguf.result import GenConfig
 
 def test_identity_mode():
     print("\n" + "="*50)
@@ -19,15 +20,26 @@ def test_identity_mode():
     engine = TTSEngine(model_dir="model")
     
     # 2. 创建 Stream
-    stream = engine.create_stream(speaker_id="vivian", language="chinese", n_ctx=4096)
+    stream = engine.create_stream(n_ctx=4096)
+    
+    # 2.1 负面测试：未锚定直接 TTS 应该报错
+    print("\n⚠️ [Negative Test] 尝试在未锚定身份的情况下调用 tts...")
+    try:
+        stream.tts("这应该会报错")
+    except RuntimeError as e:
+        print(f"✅ 捕获到预期的错误: {e}")
     
     # 3. 第一步：显式锚定音色 (Identity)
     print("\n🚀 [Step 1] 正在显式定调 (Set Identity)...")
-    id_ref_text = "你好，我是你的语音助手千问。我已经准备好为你服务了。"
-    # 设置身份，不播放声音，但内部会完成一次合成并锁定特征
-    stream.set_identity_from_speaker(speaker_id="vivian", language="chinese", text=id_ref_text, play=False)
+    id_ref_text = "你好，我是千问，你今天过管好吗？"
+    # 设置身份，获取定调时的合成结果
+    res_id = stream.set_identity_from_speaker(speaker_id="vivian", text=id_ref_text, language="chinese")
     
-    print(f"✅ Identity 状态: {'已锁定' if stream.identity.is_set else '未设置'}")
+    # 打印定调时的耗时统计
+    print("\n📊 定调（锚定）性能报告:")
+    res_id.print_stats()
+    
+    print(f"\n✅ Identity 状态: {'已锁定' if stream.identity.is_set else '未设置'}")
     if stream.identity.is_set:
         print(f"   ├─ 参考文字: '{stream.identity.text}'")
         print(f"   ├─ 参考文字长度: {len(stream.identity.text_ids)} tokens")
@@ -42,8 +54,9 @@ def test_identity_mode():
     for i, text in enumerate(test_sentences):
         print(f"\n--- [Round {i+1}] 正在合成: {text} ---")
         try:
-            # 调用新接口 tts
-            res = stream.tts(text, play=True, verbose=True, temperature=0.7)
+            # 使用 GenConfig 传递推理参数
+            cfg = GenConfig(temperature=0.7, max_steps=500)
+            res = stream.tts(text, play=True, config=cfg)
             
             # 打印详细性能统计 (来自 res.stats)
             res.print_stats()

@@ -49,3 +49,13 @@ NUM_QUANTIZERS = 16
 
 # 采样率
 SAMPLE_RATE = 24000
+
+def map_speaker(spk) -> int:
+    """将说话人名称或 ID 映射为官方数值 ID"""
+    if isinstance(spk, int): return spk
+    return SPEAKER_MAP.get(str(spk).lower(), 3065)
+
+def map_language(lang) -> int:
+    """将语言名称或 ID 映射为官方数值 ID"""
+    if isinstance(lang, int): return lang
+    return LANGUAGE_MAP.get(str(lang).lower(), 2055)

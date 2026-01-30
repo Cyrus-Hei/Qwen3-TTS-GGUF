@@ -3,6 +3,7 @@ prompt_builder.py - Prompt 构造工厂
 提供静态方法用于构建 Master 模型所需的嵌入序列。
 支持：1. 原生生成模式 2. 身份克隆引导模式
 """
+import time
 import numpy as np
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
@@ -16,6 +17,7 @@ class PromptData:
     text_ids: List[int]  # 文本 Token IDs
     spk_emb: np.ndarray  # 本次使用的全局音色向量 (2048)
     codes: Optional[np.ndarray] = None # 如果是克隆模式，包含参考音频的 codes
+    compile_time: float = 0.0          # Prompt 构建耗时
 
 class PromptBuilder:
     @staticmethod
@@ -23,6 +25,7 @@ class PromptBuilder:
         """
         构建原生生成模式的 Prompt (Header + Text)
         """
+        t_start = time.time()
         ids = tokenizer.encode(text, add_special_tokens=False)
         p = PROTOCOL
         
@@ -59,7 +62,8 @@ class PromptBuilder:
             text=text,
             text_ids=ids,
             spk_emb=spk_emb_vec,
-            codes=None
+            codes=None,
+            compile_time=time.time() - t_start
         )
 
     @staticmethod
@@ -67,6 +71,7 @@ class PromptBuilder:
         """
         构建身份克隆引导模式的 Prompt
         """
+        t_start = time.time()
         if not identity.is_set:
             raise ValueError("Identity must be set before building clone prompt.")
             
@@ -120,5 +125,6 @@ class PromptBuilder:
             text=text,
             text_ids=ids,
             spk_emb=identity.spk_emb.copy(),
-            codes=identity.codes.copy()
+            codes=identity.codes.copy(),
+            compile_time=time.time() - t_start
         )

@@ -26,6 +26,15 @@ class VoiceIdentity:
         """检查锚点是否已设置"""
         return all(x is not None for x in [self.text_ids, self.spk_emb, self.codes, self.summed_embeds])
 
+    def reset(self):
+        """重置所有身份数据"""
+        self.text = None
+        self.text_ids = None
+        self.spk_emb = None
+        self.codes = None
+        self.summed_embeds = None
+        logger.info("🧹 VoiceIdentity data reset.")
+
     def set_identity(self, text: str, text_ids: List[int], spk_emb: np.ndarray, codes: np.ndarray, summed_embeds: np.ndarray):
         """手动设置锚点属性"""
         self.text = text
