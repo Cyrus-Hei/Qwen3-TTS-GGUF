@@ -5,6 +5,7 @@ prompt_builder.py - Prompt 构造工厂
 """
 import time
 import numpy as np
+from . import logger
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 from .constants import PROTOCOL
@@ -67,13 +68,28 @@ class PromptBuilder:
         )
 
     @staticmethod
-    def build_clone_prompt(text: str, identity, tokenizer, assets, lang_id: int) -> PromptData:
+    def build_clone_prompt(text: str, anchor: 'TTSResult', tokenizer, assets, lang_id: int) -> PromptData:
         """
         构建身份克隆引导模式的 Prompt
         """
         t_start = time.time()
-        if not identity.is_set:
-            raise ValueError("Identity must be set before building clone prompt.")
+        if not anchor.is_valid_anchor:
+            raise ValueError("Anchor (TTSResult) is not a valid anchor for cloning.")
+            
+        # [NEW] 特征按需动态重构: 如果没有 summed_embeds，则从 codes 重建
+        if anchor.summed_embeds is None or len(anchor.summed_embeds) == 0:
+            logger.info("⚡ Identity summed_embeds is missing. Reconstructing from codes...")
+            codes = anchor.codes
+            reconstructed = []
+            for t in range(codes.shape[0]):
+                frame_codes = codes[t]
+                # 叠加 16 个分步码表的特征 + PAD 偏置
+                frame_vec = np.zeros(2048, dtype=np.float32)
+                for q in range(len(frame_codes)):
+                    frame_vec += assets.emb_tables[q][frame_codes[q]]
+                frame_vec += assets.tts_pad
+                reconstructed.append(frame_vec)
+            anchor.summed_embeds = reconstructed
             
         ids = tokenizer.encode(text, add_special_tokens=False)
         p = PROTOCOL
@@ -96,11 +112,11 @@ class PromptBuilder:
             embeds.append(v)
             
         # 注入全局音色
-        embeds[-1] += identity.spk_emb
+        embeds[-1] += anchor.spk_emb
         
         # 2. Identity Overlay 区域
-        n_frames = identity.codes.shape[0]
-        ref_ids = identity.text_ids
+        n_frames = anchor.codes.shape[0]
+        ref_ids = anchor.text_ids
         if len(ref_ids) < n_frames:
             ref_ids = ref_ids + [151671] * (n_frames - len(ref_ids))
         else:
@@ -108,7 +124,7 @@ class PromptBuilder:
             
         for t in range(n_frames):
             v = assets.text_table[ref_ids[t]].copy()
-            v += identity.summed_embeds[t]
+            v += anchor.summed_embeds[t]
             embeds.append(v)
             
         # 3. 新文本任务区域
@@ -124,7 +140,7 @@ class PromptBuilder:
             embd=embd_np,
             text=text,
             text_ids=ids,
-            spk_emb=identity.spk_emb.copy(),
-            codes=identity.codes.copy(),
+            spk_emb=anchor.spk_emb.copy(),
+            codes=anchor.codes.copy(),
             compile_time=time.time() - t_start
         )

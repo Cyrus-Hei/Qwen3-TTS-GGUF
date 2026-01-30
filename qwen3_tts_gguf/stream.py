@@ -11,7 +11,6 @@ from .predictors.master import MasterPredictor
 from .predictors.craftsman import CraftsmanPredictor
 
 from . import llama, logger
-from .identity import VoiceIdentity
 from .prompt_builder import PromptBuilder, PromptData
 
 class TTSStream:
@@ -31,8 +30,8 @@ class TTSStream:
         self.master = MasterPredictor(engine.m_model, self.m_ctx, self.m_batch, self.assets)
         self.craftsman = CraftsmanPredictor(engine.c_model, self.c_ctx, self.c_batch, self.assets)
         
-        # 3. 初始化身份锚点 (Identity)
-        self.identity = VoiceIdentity()
+        # 3. 身份锚点 (直接使用 TTSResult)
+        self.identity: Optional[TTSResult] = None
         self.mouth = getattr(engine, 'mouth', None)
 
     def _init_contexts(self):
@@ -59,7 +58,7 @@ class TTSStream:
         """
         同步合成接口（要求 Identity 已设置）。
         """
-        if not self.identity.is_set:
+        if self.identity is None:
             raise RuntimeError("Identity is not set. Please call `set_identity` first.")
 
         cfg = config or GenConfig()
@@ -73,9 +72,9 @@ class TTSStream:
         # 3. 后处理 (渲染与封装)
         res = self._post_process(text, pdata, lout)
 
-        # 4. 副作用执行
-        if save_path: self.save_audio(res.audio, save_path)
-        if play: self.play_audio(res.audio)
+        # 4. 副作用执行 (直接调用结果对象的 IO 方法)
+        if save_path: res.save_wav(save_path)
+        if play: res.play()
         
         return res
 
@@ -160,20 +159,19 @@ class TTSStream:
         )
 
     def save_audio(self, audio: np.ndarray, path: str):
-        """保存音频文件"""
+        """兼容层：保存音频文件"""
         import soundfile as sf
         sf.write(path, audio, 24000)
-        logger.info(f"💾 Audio saved to: {path}")
 
     def play_audio(self, audio: np.ndarray):
-        """播放音频"""
+        """兼容层：播放音频"""
         import sounddevice as sd
         sd.play(audio, 24000)
         sd.wait()
 
     def reset(self):
         """完全重置身份和状态"""
-        self.identity.reset()
+        self.identity = None
         self.master.clear_memory()
         self.mouth.reset()
 
@@ -189,11 +187,17 @@ class TTSStream:
     def __del__(self):
         self.shutdown()
 
+    def set_identity(self, res: TTSResult):
+        """直接设置身份锚点"""
+        if not res.is_valid_anchor:
+            raise ValueError("Provided TTSResult is not a valid anchor.")
+        self.identity = res
+        logger.info(f"🔒 Identity locked to text: '{res.text}'")
+
     def set_identity_from_speaker(self, speaker_id: str, text: str, language: str = "chinese", config: Optional[GenConfig] = None) -> TTSResult:
-        """指定原始音色并生成锚点（定调），返回标准合成结果"""
+        """原生定调：从指定说话人生成一个身份锚点结果"""
         logger.info(f"📍 Setting Identity from Speaker: {speaker_id}, language: {language}")
         
-        self.identity.reset()
         cfg = config or GenConfig()
         
         # 1. 编译 Prompt
@@ -202,9 +206,8 @@ class TTSStream:
         # 2. 推理循环
         lout = self._run_engine_loop(pdata, timing, cfg.temperature, cfg.max_steps)
         
-        # 3. 固化身份
-        self.identity.set_identity(text, pdata.text_ids, pdata.spk_emb, np.array(lout.all_codes), lout.summed_embeds)
+        # 3. 生成结果并设为锚点
+        res = self._post_process(text, pdata, lout)
+        self.set_identity(res)
         
-        # 4. 后处理并返回
-        return self._post_process(text, pdata, lout)
-
+        return res
