@@ -54,6 +54,10 @@ class TTSConfig:
     
     max_steps: int = 600
     voice_clone_mode: bool = True
+    
+    # 流式发声控制
+    stream_play: bool = False       # 是否开启流式边推边播 (需要 sounddevice)
+    mouth_chunk_size: int = 25      # 流式播放时，每累积多少帧 Codec 发送给嘴巴 (默认 25 帧)
 
 @dataclass
 class TTSResult:

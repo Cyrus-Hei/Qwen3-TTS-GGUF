@@ -55,7 +55,8 @@ class TTSStream:
     def tts(self, 
             text: str, 
             language: str = "chinese",
-            config: Optional[TTSConfig] = None) -> TTSResult:
+            config: Optional[TTSConfig] = None,
+            verbose: bool = True) -> TTSResult:
         """
         同步合成接口。
         """
@@ -77,11 +78,43 @@ class TTSStream:
         # 1. 准备文本 Prompt 数据
         pdata, timing = self._build_prompt_data(text, language, is_clone=cfg.voice_clone_mode)
         
-        # 2. 推理循环：大师自回环 -> 工匠自回环
-        lout = self._run_engine_loop(pdata, timing, cfg)
+        # 2. 推理循环 (流式产出)
+        all_codes = []
+        turn_summed_embeds = []
+        chunk_buffer = []
+        pushed_count = 0
+        
+        # 如果开启流式播放，先重置嘴巴状态
+        if cfg.stream_play and self.mouth:
+            self.mouth.reset()
+            if verbose: logger.info(f"🚀 [TTS] 开始流式推送任务 (TaskID: {self.mouth.active_task_id})")
+            
+        # 迭代生成
+        for step_codes, summed_vec in self._run_engine_loop_gen(pdata, cfg, timing):
+            all_codes.append(step_codes)
+            turn_summed_embeds.append(summed_vec)
+            
+            # 流式分块逻辑
+            if cfg.stream_play and self.mouth:
+                chunk_buffer.append(step_codes)
+                if len(chunk_buffer) >= cfg.mouth_chunk_size:
+                    # 异步丢给子进程，不阻塞主进程推理
+                    self.mouth.decode(np.array(chunk_buffer), is_final=False, stream=True)
+                    pushed_count += len(chunk_buffer)
+                    if verbose: print(f"\r   📡 已推送: {pushed_count:3} 帧 Codec...", end="", flush=True)
+                    chunk_buffer = []
+        
+        # 最后一段处理 (Final)
+        if cfg.stream_play and self.mouth:
+            # 发送剩余的 buffer，并标记 final 以触发最后一段音频输出
+            self.mouth.decode(np.array(chunk_buffer) if chunk_buffer else np.zeros((0, 16)), is_final=True, stream=True)
+            pushed_count += len(chunk_buffer)
+            if verbose: print(f"\n   ✅ 推送完毕, 共计: {pushed_count} 帧。")
+        
+        lout = LoopOutput(all_codes=all_codes, summed_embeds=turn_summed_embeds, timing=timing)
         
         # 3. 后处理：生成波形并封装结果
-        res = self._post_process(text, pdata, lout)
+        res = self._post_process(text, pdata, lout, cfg=cfg)
         res.timing = timing
         return res
 
@@ -99,19 +132,20 @@ class TTSStream:
         timing.prompt_time = pdata.compile_time
         return pdata, timing
 
-    def _run_engine_loop(self, 
-                       pdata: PromptData,
-                       timing: Timing,
-                       cfg: TTSConfig) -> LoopOutput:
-        """
-        内核层：负责 Master 与 Craftsman 的逐帧推理循环。
-        """
-        self.master.clear_memory()
-        self.mouth.reset()
-        
+    def _run_engine_loop(self, pdata: PromptData, timing: Timing, cfg: TTSConfig) -> LoopOutput:
+        """同步包装器：消耗生成器并返回完整结果"""
         all_codes = []
         turn_summed_embeds = []
+        for step_codes, summed_vec in self._run_engine_loop_gen(pdata, cfg, timing):
+            all_codes.append(step_codes)
+            turn_summed_embeds.append(summed_vec)
+        return LoopOutput(all_codes=all_codes, summed_embeds=turn_summed_embeds, timing=timing)
 
+    def _run_engine_loop_gen(self, pdata: PromptData, cfg: TTSConfig, timing: Timing):
+        """
+        [New] 生成器版推理循环。
+        逐帧产出 (codes, summed_embeds)。
+        """
         # 大师 Prefill
         t_pre_s = time.time()
         m_hidden, m_logits = self.master.prefill(pdata.embd, seq_id=0)
@@ -126,10 +160,7 @@ class TTSStream:
                 top_k=cfg.top_k
             )
             if code_0 == PROTOCOL["EOS"]:
-                m_hidden, m_logits = self.master.decode_step(
-                    self.assets.emb_tables[0][PROTOCOL["EOS"]].flatten() + self.assets.tts_pad.flatten(),
-                    seq_id=0
-                )
+                # 发送最后一个 EOS 信号（可选，模型通常会自动结束）
                 break
             
             # 工匠补全
@@ -144,31 +175,42 @@ class TTSStream:
             )
             timing.craftsman_loop_time += (time.time() - t_c_s)
             
-            all_codes.append(step_codes)
-            
-            # 大师反馈
+            # 大师反馈 (由外部驱动结果消费)
             t_m_s = time.time()
             summed = np.sum(step_embeds_2048, axis=0) + self.assets.tts_pad.flatten()
-            turn_summed_embeds.append(summed.copy())
             m_hidden, m_logits = self.master.decode_step(summed, seq_id=0)
             timing.master_loop_time += (time.time() - t_m_s)
             
-        timing.total_steps = len(all_codes)
-        return LoopOutput(all_codes=all_codes, summed_embeds=turn_summed_embeds, timing=timing)
+            yield step_codes, summed
+            
+        else:
+            # for 循环正常结束（即达到 max_steps 而未 break）
+            print(f"\n⚠️  [Stream] 推理达到了最大步数限制 ({cfg.max_steps}) 仍未检出 EOS。这可能是模型进入了无限静音或重复模式。")
+            
+        timing.total_steps = len(pdata.embd) + step_idx # 粗略统计
 
     def _post_process(self, 
                      text: str, 
                      pdata: PromptData, 
-                     lout: LoopOutput) -> TTSResult:
+                     lout: LoopOutput,
+                     cfg: Optional[TTSConfig] = None) -> TTSResult:
         """
-        渲染音频并封装 TTSResult。
+        后处理：生成音频波形并封装。
+        如果 stream_play=True，则波形生成已在子进程处理，这里仅做同步。
         """
-        t_r_s = time.time()
-        audio_out = self.mouth.decode_full(np.array(lout.all_codes))
-        lout.timing.mouth_render_time = time.time() - t_r_s
+        audio = None
+        if self.mouth:
+            # 无论是否流式，最终都需要获取完整音频用于 TTSResult (可选)
+            # 对于流式模式，离线解码依然可以并行或直接从子进程收集
+            t0 = time.time()
+            audio = self.mouth.decode(np.array(lout.all_codes), is_final=True, stream=False)
+            
+            # [RTF Logic] 如果是非流式，算在 mouth_render_time
+            # 如果是流式，此时 mouth.decode 应该非常快（因为大部分已在后台算完）
+            lout.timing.mouth_render_time = time.time() - t0
 
         return TTSResult(
-            audio=audio_out,
+            audio=audio,
             text=text,
             text_ids=pdata.text_ids,
             spk_emb=pdata.spk_emb,
@@ -222,8 +264,8 @@ class TTSStream:
         
         cfg = config or TTSConfig()
         
-        # 1. 编译 Prompt
-        pdata, timing = self._build_prompt_data(text, language, cfg, speaker_id=speaker_id)
+        # 1. 编译 Prompt (原生模式，不使用 self.voice)
+        pdata, timing = self._build_prompt_data(text, language, is_clone=False, speaker_id=speaker_id)
         
         # 2. 推理循环
         lout = self._run_engine_loop(pdata, timing, cfg)
