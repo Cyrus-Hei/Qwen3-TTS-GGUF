@@ -1,6 +1,18 @@
 # Qwen3-TTS GGUF
 
-用 llama.cpp 跑的 Qwen3-TTS，支持 Vulkan GPU 加速。
+用 llama.cpp 跑的 Qwen3-TTS，支持流式合成、声音克隆。
+
+## 模型类型
+
+本项目支持三种官方模型，对应三种场景：
+
+| 源模型 | 场景 |
+| :--- | :--- |
+| Qwen3-TTS-12Hz-1.7B-Base | 零样本声音克隆 |
+| Qwen3-TTS-12Hz-1.7B-CustomVoice | 内置精品音色 + 风格指令 |
+| Qwen3-TTS-12Hz-1.7B-VoiceDesign | 用自然语言设计音色 |
+
+你想用哪个，就导出哪个，但是需要先下载官方模型才能导出。
 
 ## 性能表现
 
@@ -12,212 +24,147 @@
 
 RTF < 1 就表示生成速度比实时播放还快。
 
-## 当前功能状态
-
-✅ **可用**：
-- 用预置音色对文本进行语音合成
-- 支持中英日韩等多种语言
-- 支持多个预置说话人（Vivian、Serena、UncleFu 等）
-
-❌ **暂不可用**：
-- Encoder（用于音频编码和声音克隆）的导出目前还有问题
-- 自定义声音克隆功能暂时无法使用
 
 ## 快速开始
 
-### 1. 准备原始模型
+#### 下载模型
 
-把官方的 `Qwen3-TTS-12Hz-1.7B-CustomVoice` 模型放到项目根目录。
+- [Qwen3-TTS-12Hz-1.7B-Base](https://www.modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base)
+- [Qwen3-TTS-12Hz-1.7B-CustomVoice](https://www.modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice)
+- [Qwen3-TTS-12Hz-1.7B-VoiceDesign](https://www.modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign)
 
-### 2. 按顺序运行转换脚本
 
-#### 阶段一：准备组件（可选）
+#### 配置路径
 
-这些脚本导出模型的不同组件，但 Encoder 还不能用：
-
-```bash
-# 11 - 导出 Encoder（暂不可用，非声音克隆也用不着）
-python 11-Export-Encoder.py
-
-# 12 - 导出 Decoder（嘴巴，用于合成声音）
-python 12-Export-Decoder.py
-
-# 13 - 导出 Embeddings
-python 13-Export-Embeddings.py
-```
-
-#### 阶段二：提取大师模型（Talker）
-
-大师模型是 LLM backbone，负责生成语音骨架：
-
-```bash
-# 21 - 从原始模型中提取大师权重
-python 21-Extract-Master-Weights.py
-
-# 22 - 准备 Tokenizer
-python 22-Prepare-Mini-Tokenizer.py
-
-# 23 - 转换为 GGUF 格式
-python 23-Convert-Master-GGUF.py
-```
-
-#### 阶段三：提取工匠模型（Craftsman/Predictor）
-
-工匠模型负责预测多层 codec codes，为骨架补充血肉：
-
-```bash
-# 31 - 提取工匠模型权重
-python 31-Extract-Craftsman--Weights.py
-
-# 32 - 准备工匠 Tokenizer
-python 32-Prepare-Craftsman-Tokenizer.py
-
-# 33 - 转换为 GGUF 格式
-python 33-Convert-Craftsman-GGUF.py
-```
-
-### 3. 运行推理
-
-#### 批量推理模式
-
-```bash
-python 41-Inference.py
-```
-
-这会生成完整的音频文件并保存到 `output/` 目录。
-
-#### 流式推理模式
-
-```bash
-python 42-Inference-Streaming.py
-```
-
-支持边生成边播放，可以分段发送和播放音频。
-
-## 推理使用示例
+打开 `export_config.py`，改两行：
 
 ```python
-from qwen3_tts_gguf import Qwen3TTS
-
-# 初始化引擎
-tts = Qwen3TTS()
-
-# 合成语音
-audio = tts.synthesize(
-    text="你好，我是千问3-TTS",
-    speaker_id="vivian",      # 或用数字 ID，如 3065
-    language="chinese",       # 支持 chinese/english/japanese/korean 等
-    max_steps=400,            # 最大生成步数
-    temperature=0.9,          # 大师采样温度
-    subtalker_temperature=0.9 # 工匠采样温度
-)
-
-# 保存音频
-import soundfile as sf
-sf.write("output.wav", audio, 24000)
+MODEL_DIR = "官方模型路径"   # 比如 ~/.cache/.../Qwen3-TTS-12Hz-1.7B-Base
+EXPORT_DIR = "./model-base"  # 输出目录
 ```
 
-### 可用说话人列表
+#### 阶段一：导出小组件
 
-- **vivian** (3065)
-- **serena** (3066)
-- **uncle_fu** (3010)
-- **ryan** (3061)
-- **aiden** (2861)
-- **ono_anna** (2873)
-- **sohee** (2864)
-- **eric** (2875)
-- **dylan** (2878)
+```bash
+python 11-Export-Codec-Encoder.py   # 编码器，克隆用
+python 12-Export-Speaker-Encoder.py # 说话人特征提取器
+python 13-Export-Decoder.py          # 解码器，把 codes 变声音
+python 14-Export-Embeddings.py       # Embedding 权重
+python 15-Copy-Tokenizer.py          # 文本分词器
+```
 
-### 支持的语言
+#### 阶段二：导出大师（Talker）
 
-- **chinese** (2055) - 中文
-- **english** (2050) - 英语
-- **japanese** (2058) - 日语
-- **korean** (2064) - 韩语
-- **german** (2053) - 德语
-- **spanish** (2054) - 西班牙语
-- **french** (2061) - 法语
-- **russian** (2069) - 俄语
-- **beijing_dialect** (2074) - 北京话
-- **sichuan_dialect** (2062) - 四川话
+大师是 1.42B 的 LLM backbone，负责理解文本、生成语音骨架：
 
-## 模型架构说明
+```bash
+python 21-Extract-Talker-Weights.py    # 拆权重
+python 22-Prepare-Talker-Tokenizer.py  # 造迷你词表（GGUF 需要）
+python 23-Convert-Talker-GGUF.py       # 转 GGUF
+```
 
-这个项目把 Qwen3-TTS 拆成了几个独立部分，可以用人的器官来理解：
+#### 阶段三：导出工匠（Predictor）
 
-1. **左耳朵（文本 Tokenizer）**: 把你输入的文字转换成 tokens，让模型能读懂
-2. **右耳朵（音频 Encoder）**: 把参考音频编码成音色特征（❌ 暂时还没弄好）
-3. **大脑（Talker/大师）**: 1.42B 参数的 LLM backbone（28层，2048隐藏层），负责理解文本和生成语音骨架
-4. **双手（Craftsman/工匠）**: 142M 参数的代码预测器（8层），负责生成多层 codec codes，给骨架补充血肉
-5. **嘴巴（Decoder）**: ONNX 模型，把 codec codes 解码成最终音频
+工匠是 142M 的小模型，负责给骨架补充血肉：
 
-目前**右耳朵还没修好**，所以只能用预制音色，不能克隆声音。但左耳朵、大脑、双手、嘴巴都配合得很好了！
+```bash
+python 31-Extract-Predictor-Weights.py
+python 32-Prepare-Predictor-Tokenizer.py
+python 33-Convert-Predictor-GGUF.py
+```
 
-## 推理引擎
+导完之后，`EXPORT_DIR` 里就有你需要的所有文件了。
 
-不同的部分用不同的推理引擎：
+## 推理
 
-- **耳朵**: ONNX Runtime
-- **大师和工匠**: llama.cpp（大师伪装成 Qwen3-VL，工匠伪装成 Qwen3，才能被 llama.cpp 识别）
-- **嘴巴**: ONNX Runtime
+### 交互模式（推荐）
 
-llama.cpp 支持 Vulkan GPU 加速，这就是为什么在 RTX 5050 上能达到 RTF 0.5 的原因。
+```bash
+python 51-Interactive-Clone.py
+```
 
-## GPU 加速
+启动后直接打字，边推边播。
 
-llama.cpp 会自动检测并使用可用的 GPU。如果想强制使用特定设备，可以设置环境变量：
+### 脚本模式
+
+三个示例脚本，对应三种模型：
+
+```bash
+python 41-Inference-Base.py    # 声音克隆
+python 42-Inference-Custom.py  # 精品音色
+python 43-Inference-Design.py  # 音色设计
+```
+
+## 代码调用
 
 ```python
-# 禁用 Vulkan（强制 CPU）
-os.environ["VK_ICD_FILENAMES"] = "none"
+from qwen3_tts_gguf import TTSEngine, TTSConfig
 
-# 强制使用集显
-os.environ["GGML_VK_VISIBLE_DEVICES"] = "1"
+engine = TTSEngine(model_dir="model-base")
+stream = engine.create_stream()
 
-# 禁用 FP16 计算（某些集显有精度问题）
-os.environ["GGML_VK_DISABLE_F16"] = "1"
+# 从 JSON 加载音色（无损）
+stream.set_voice("output/sample.json")
+
+# 流式合成
+result = stream.clone("你好，世界！", streaming=True)
+stream.join()  # 等播完
+
+# 保存
+result.save("output.wav")
+result.save("output.json")  # 保存 codes，下次可以无损加载
 ```
 
-## 文件结构
+## 可用说话人
 
-```
-qwen3-tts/
-├── 01-Run-Official-Inference.py      # 测试官方模型是否工作
-├── 11-Export-Encoder.py              # 导出 Encoder（暂不可用）
-├── 12-Export-Decoder.py              # 导出 Decoder
-├── 13-Export-Embeddings.py           # 导出所有 embedding 表
-├── 21-Extract-Master-Weights.py      # 提取大师模型权重
-├── 22-Prepare-Mini-Tokenizer.py      # 准备大师 tokenizer
-├── 23-Convert-Master-GGUF.py         # 转换大师为 GGUF
-├── 31-Extract-Craftsman--Weights.py  # 提取工匠模型权重
-├── 32-Prepare-Craftsman-Tokenizer.py # 准备工匠 tokenizer
-├── 33-Convert-Craftsman-GGUF.py      # 转换工匠为 GGUF
-├── 41-Inference.py                   # 批量推理脚本
-├── 42-Inference-Streaming.py         # 流式推理脚本
-├── model/                            # 转换后的模型文件
-│   ├── qwen3_tts_talker.gguf        # 大师模型
-│   ├── qwen3_tts_craftsman.gguf     # 工匠模型
-│   ├── qwen3_tts_decoder.onnx       # 解码器
-│   └── codec_embedding_*.npy        # Codec embedding 表
-└── qwen3_tts_gguf/                  # 核心推理和一些转换代码
-```
+CustomVoice 模型内置 9 个音色：
+
+| ID | 说明 |
+| :--- | :--- |
+| vivian | 年轻女声，明亮利落 |
+| serena | 温暖女声，柔和亲切 |
+| uncle_fu | 成熟男声，沉稳低沉 |
+| dylan | 北京男声，自然清晰 |
+| eric | 成都男声，略带沙哑 |
+| ryan | 活力男声，节奏感强 |
+| aiden | 阳光美男，中频清澈 |
+| ono_anna | 日语女声，俏皮轻快 |
+| sohee | 韩语女声，温润动情 |
+
+## 支持的语言
+
+- chinese, english, japanese, korean
+- german, spanish, french, russian, italian, portuguese
+- beijing_dialect, sichuan_dialect
+
+## 架构简述
+
+用人体器官来理解：
+
+1. **耳朵**（Encoder）: 听参考音频，提取音色特征
+2. **大脑**（Talker）: 生成语音骨架 (28层, 1.42B)
+3. **双手**（Predictor）: 补充细节 (8层, 142M)
+4. **嘴巴**（Decoder）: 把 codes 解码成声音
+
+推理引擎：
+- Talker / Predictor: llama.cpp (GGUF)
+- Encoder / Decoder: ONNX Runtime
 
 ## 常见问题
 
-**Q: 为什么不用官方的 PyTorch 推理？**
+**Q: 为什么不用官方 PyTorch？**
 
-A: 官方实现需要大量显存，而 llama.cpp + GGUF 格式可以用更少的资源运行，并且支持各种硬件加速。
+官方实现要大显存。llama.cpp 省资源，还能用 Vulkan 加速。
 
-**Q: 流式推理和批量推理有什么区别？**
+**Q: 流式和离线有什么区别？**
 
-A: 流式推理可以边生成边播放，降低首字延迟；批量推理生成完整音频后再播放。流式推理更适合实时对话场景。
+流式边推边播，首包延迟低。离线推完再播，适合批量生成。
 
-**Q: 如何调整生成质量？**
+**Q: 怎么调质量？**
 
-A: 调整 `temperature` 参数。越低越保守但可能重复，越高越多样但可能不稳定。推荐 0.7-1.0 之间。
+`TTSConfig(temperature=0.8)` 控制随机性。低了呆板，高了飘忽，推荐 0.7-1.0。
 
-## 相关资源
+## 相关链接
 
-- [Qwen3-TTS 官方技术报告](./Qwen3-TTS%20Technical%20Report.md)
+- [Qwen3-TTS 技术报告](./Qwen3-TTS%20Technical%20Report.md)
 - [llama.cpp](https://github.com/ggerganov/llama.cpp)
