@@ -293,20 +293,23 @@ class TTSStream:
     # 音色设置 API (Voice Management)
     # =========================================================================
 
-    def set_voice(self, source: Union[TTSResult, str, Path], text: Optional[str] = None) -> bool:
-        """统一设置当前流的音色锚点。返回是否成功。"""
+    def set_voice(self, source: Union[TTSResult, str, Path], text: Optional[str] = None, **kwargs) -> Union[bool, TTSResult]:
+        """统一设置当前流的音色锚点。返回生成的 TTSResult 或 False。"""
         try:
+            success = False
             if isinstance(source, TTSResult):
-                return self._set_voice_from_result(source)
-            
-            source_p = Path(source)
-            if source_p.suffix.lower() == ".json":
-                return self._set_voice_from_json(source_p)
-            elif source_p.suffix.lower() in [".wav", ".mp3", ".flac", ".m4a", ".opus"]:
-                return self._set_voice_from_audio(source_p, text or "")
+                success = self._set_voice_from_result(source)
             else:
-                # 尝试作为内置说话人处理
-                return self.set_voice_from_speaker(str(source), text or "你好")
+                source_p = Path(source)
+                if source_p.suffix.lower() == ".json":
+                    success = self._set_voice_from_json(source_p)
+                elif source_p.suffix.lower() in [".wav", ".mp3", ".flac", ".m4a", ".opus"]:
+                    success = self._set_voice_from_audio(source_p, text or "", **kwargs)
+                else:
+                    # 尝试作为内置说话人处理
+                    return self.set_voice_from_speaker(str(source), text or "你好", **kwargs)
+            
+            return self.voice if success else False
         except Exception as e:
             logger.error(f"❌ 设置音色时出现无法预料的异常: {e}")
             return False
@@ -358,14 +361,16 @@ class TTSStream:
                 try: os.remove(temp_wav)
                 except: pass
 
-    def set_voice_from_speaker(self, speaker_id: str, text: str, language: str = "chinese") -> bool:
-        """从内置说话人生成音色锚点"""
+    def set_voice_from_speaker(self, speaker_id: str, text: str, **kwargs) -> Optional[TTSResult]:
+        """从内置说话人生成音色锚点并设置"""
         try:
-            logger.info(f"📍 正在从内置说话人初始化音色: {speaker_id}")
-            res = self.custom(text, speaker_id, language=language, verbose=False)
+            logger.info(f"📍 正在从内置说话人初始化音色核心: {speaker_id}")
+            # kwargs 包含 language, streaming, verbose 等
+            res = self.custom(text, speaker_id, **kwargs)
             if res:
-                return self._set_voice_from_result(res)
-            return False
+                self._set_voice_from_result(res)
+                return res
+            return None
         except Exception as e:
             logger.error(f"❌ 内置音色初始化失败: {e}")
-            return False
+            return None
