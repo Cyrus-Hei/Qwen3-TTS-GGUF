@@ -12,8 +12,6 @@ def main():
     # 1. 配置路径
     OUTPUT_DIR = os.path.join(EXPORT_DIR, "tokenizer")
 
-    print("🚀 开始复制文本 Tokenizer...")
-
     # 2. 检查源路径
     if not os.path.exists(MODEL_DIR):
         print(f"❌ 模型目录不存在: {MODEL_DIR}")
@@ -24,6 +22,20 @@ def main():
 
     # 3. 创建目标目录
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    # [核心增强] 生成单一 tokenizer.json 以便被 tokenizers 库加载
+    try:
+        from transformers import AutoTokenizer
+        print("   正在将官方 Tokenizer 转换为单一格式 (tokenizer.json)...")
+        # 直接从源目录加载官方分词器
+        hf_tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, trust_remote_code=True)
+        # 强制保存，这会根据 vocab.json 和 merges.txt 自动合成 tokenizer.json
+        hf_tokenizer.save_pretrained(OUTPUT_DIR)
+        print("   ✅ 已合成单体 tokenizer.json。")
+    except ImportError:
+        print("   ⚠️  未安装 transformers，无法合成单体 tokenizer.json。")
+    except Exception as e:
+        print(f"   ⚠️  Tokenizer 转换失败: {e}")
 
     # 4. 需要复制的文本 Tokenizer 核心文件
     required_files = [

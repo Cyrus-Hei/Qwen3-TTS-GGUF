@@ -303,6 +303,46 @@ def load_model(model_path: str, n_gpu_layers: int = -1):
         logger.error(f"模型加载失败: {model_path}")
         return None
 
+def create_context(model, n_ctx=2048, n_batch=2048, embeddings=False, pooling_type=0, n_threads=None):
+    """
+    创建并初始化 llama_context。
+    
+    Args:
+        model: llama_model 指针
+        n_ctx: 上下文大小
+        n_batch: 批处理大小
+        embeddings: 是否开启 Embedding (提取 Hidden States 必须开启)
+        pooling_type: 池化类型 (0=None, 1=Mean, 2=CLS)
+        n_threads: 线程数，默认自动
+        
+    Returns:
+        ctx: llama_context 指针
+    """
+    params = llama_context_default_params()
+    params.n_ctx = n_ctx
+    params.n_batch = n_batch
+    params.embeddings = embeddings
+    params.pooling_type = pooling_type
+    
+    if n_threads:
+        params.n_threads = n_threads
+        params.n_threads_batch = n_threads
+        
+    return llama_init_from_model(model, params)
+
+def create_batch(n_tokens, embd_dim=0, n_seq_max=1):
+    """
+    创建并初始化 llama_batch。
+    
+    Args:
+        n_tokens: 最大 token 数
+        embd_dim: Embedding 维度。
+                  如果是 0，则使用 token 输入。
+                  如果是 >0 的值（如 2048），则作为 Embedding 输入的维度并分配对应内存。
+        n_seq_max: 最大序列数
+    """
+    return llama_batch_init(n_tokens, embd_dim, n_seq_max)
+
 # =========================================================================
 # 日志回调
 # =========================================================================

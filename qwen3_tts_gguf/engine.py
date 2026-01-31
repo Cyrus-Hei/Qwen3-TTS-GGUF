@@ -16,7 +16,7 @@ class TTSEngine:
     """
     Qwen3-TTS 引擎：资源池与 Stream 工厂。
     """
-    def __init__(self, model_dir="model", tokenizer_path="Qwen3-TTS-12Hz-1.7B-CustomVoice", verbose=True):
+    def __init__(self, model_dir="model", verbose=True):
         import time
         import numpy as np
         from tokenizers import Tokenizer
@@ -24,7 +24,6 @@ class TTSEngine:
         t_start = time.time()
         self.project_root = os.getcwd()
         self.model_dir = os.path.join(self.project_root, model_dir)
-        self.tokenizer_path = os.path.join(self.project_root, tokenizer_path)
         
         # 路径定义
         self.paths = {
@@ -33,6 +32,7 @@ class TTSEngine:
             "mouth_onnx": os.path.join(self.model_dir, "qwen3_tts_decoder_stateful.onnx"),
             "codec_enc_onnx": os.path.join(self.model_dir, "qwen3_tts_codec_encoder.onnx"),
             "spk_enc_onnx": os.path.join(self.model_dir, "qwen3_tts_speaker_encoder.onnx"),
+            "tokenizer": os.path.join(self.model_dir, 'tokenizer', 'tokenizer.json'),
         }
         
         # 1. 资产加载
@@ -40,11 +40,10 @@ class TTSEngine:
         self.assets = AssetsManager(self.model_dir)
         
         # 使用轻量级 tokenizers 库加载
-        json_path = os.path.join(self.tokenizer_path, "tokenizer.json")
-        if not os.path.exists(json_path):
-            raise FileNotFoundError(f"未找到轻量级分词文件: {json_path}。请先运行 96-Convert-Tokenizer.py 转换。")
+        if not os.path.exists(self.paths['tokenizer']):
+            raise FileNotFoundError(f"未找到轻量级分词文件: {self.paths['tokenizer']}。")
             
-        self.tokenizer = Tokenizer.from_file(json_path)
+        self.tokenizer = Tokenizer.from_file(self.paths['tokenizer'])
         if verbose: print(f"📦 [Engine] 资产与词表加载完成 (耗时: {time.time()-t1:.2f}s)")
         
         # 2. 模型引擎初始化

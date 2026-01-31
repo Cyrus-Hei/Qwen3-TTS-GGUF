@@ -40,17 +40,13 @@ class TTSStream:
     def _init_contexts(self):
         """初始化此语音流专属的推理环境"""
         logger.info(f"[Stream] 正在初始化独立 Context (n_ctx={self.n_ctx})...")
-        m_params = llama.llama_context_default_params()
-        m_params.n_ctx = self.n_ctx
-        m_params.embeddings = True
-        self.m_ctx = llama.llama_init_from_model(self.engine.m_model, m_params)
         
-        c_params = llama.llama_context_default_params()
-        c_params.n_ctx = 512
-        self.c_ctx = llama.llama_init_from_model(self.engine.c_model, c_params)
+        # 使用 llama.py 升级版接口，确保参数安全
+        self.m_ctx = llama.create_context(self.engine.m_model, n_ctx=self.n_ctx, embeddings=True)
+        self.c_ctx = llama.create_context(self.engine.c_model, n_ctx=512, embeddings=False)
         
-        self.m_batch = llama.llama_batch_init(self.n_ctx, 2048, 1)
-        self.c_batch = llama.llama_batch_init(32, 1024, 1)
+        self.m_batch = llama.create_batch(self.n_ctx, embd_dim=2048)
+        self.c_batch = llama.create_batch(32, embd_dim=1024)
 
     # =========================================================================
     # 核心推理 API (Adapt to Base / CustomVoice / VoiceDesign)
