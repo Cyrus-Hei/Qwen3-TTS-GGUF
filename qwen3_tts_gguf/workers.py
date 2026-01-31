@@ -22,22 +22,22 @@ def wav_writer_proc(record_queue, filename, sample_rate=24000):
     except: pass
     finally: f.close()
 
-def decoder_worker_proc(codes_queue, pcm_queue, mouth_onnx_path, record_queue=None):
+def decoder_worker_proc(codes_queue, pcm_queue, decoder_onnx_path, record_queue=None):
     """
-    解码子进程工人。
+    解码子进程工人 (DecoderWorker)。
     
     请求协议: (type, task_id, payload, is_final)
     响应协议: (type, task_id, pcm_data, compute_time)
     """
-    from qwen3_tts_gguf.mouth_decoder import StatefulMouthDecoder
+    from qwen3_tts_gguf.decoder import StatefulDecoder
     
     # 强制关闭多线程竞争，防止干扰主进程
     os.environ["OMP_NUM_THREADS"] = "4"
     
-    decoder = StatefulMouthDecoder(mouth_onnx_path, use_dml=True)
+    decoder = StatefulDecoder(decoder_onnx_path, use_dml=True)
     # 向 Proxy 发送就绪信号
-    pcm_queue.put(("READY", "mouth", None, 0))
-    print(f"  🔊 [MouthWorker] 已就绪 (Provider: {decoder.active_provider})")
+    pcm_queue.put(("READY", "decoder", None, 0))
+    print(f"  🔊 [DecoderWorker] 已就绪 (Provider: {decoder.active_provider})")
     
     try:
         while True:
@@ -61,7 +61,7 @@ def decoder_worker_proc(codes_queue, pcm_queue, mouth_onnx_path, record_queue=No
                 if codes_all.ndim == 1:
                     codes_all = codes_all.reshape(-1, 16)
                 
-                # 自动切分超长序列 (防止单次推理显存溢出或超时)
+                # 自动切分超长序列
                 chunk_step = 50
                 n_total = codes_all.shape[0]
                 
@@ -69,7 +69,6 @@ def decoder_worker_proc(codes_queue, pcm_queue, mouth_onnx_path, record_queue=No
                     for start_idx in range(0, n_total, chunk_step):
                         end_idx = min(start_idx + chunk_step, n_total)
                         is_last_chunk = (end_idx == n_total)
-                        # 仅在最后一个 chunk 且任务本身是 is_final 时，传递 is_final=True
                         current_is_final = is_final and is_last_chunk
                         
                         codes = codes_all[start_idx:end_idx]
@@ -83,25 +82,22 @@ def decoder_worker_proc(codes_queue, pcm_queue, mouth_onnx_path, record_queue=No
                             pcm_queue.put(("AUDIO", task_id, audio.copy(), dt))
                             if record_queue: record_queue.put(audio.copy())
                         else:
-                            # 即使没产出音频也推个空的，维持心跳
                             pcm_queue.put(("AUDIO", task_id, np.array([], dtype=np.float32), dt))
                     
-                    # 如果是同步任务，且已处理完，发送一个特殊的结束标识 (pcm=None)
                     if msg_type == "DECODE":
                         pcm_queue.put(("AUDIO", task_id, None, 0))
                         
                 except Exception as e:
-                    print(f"  ⚠️ [MouthWorker] 解码异常: {e} (已触发状态重置)")
+                    print(f"  ⚠️ [DecoderWorker] 解码异常: {e}")
                     decoder.reset()
-                    # 回传空音频及结束标识以防主进程死等
                     pcm_queue.put(("AUDIO", task_id, np.array([], dtype=np.float32), 0))
                     if msg_type == "DECODE":
                         pcm_queue.put(("AUDIO", task_id, None, 0))
 
     except KeyboardInterrupt:
-        pass # 静默退出
+        pass
     except Exception as e:
-        print(f"  ❌ [MouthWorker] 崩溃: {e}")
+        print(f"  ❌ [DecoderWorker] 崩溃: {e}")
         import traceback
         traceback.print_exc()
 

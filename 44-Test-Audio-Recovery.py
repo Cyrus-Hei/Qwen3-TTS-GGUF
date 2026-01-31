@@ -38,9 +38,9 @@ def main():
     reloaded_res.play()
     
     # 4. 注入引擎的解码器进行“复活”
-    print("\n4️⃣ 正在执行注入式解码 (.decode(engine.mouth))...")
-    # engine.mouth 遵循 decoder 接口 (具备 .decode 方法)
-    reloaded_res.decode(engine.mouth)
+    print("\n4️⃣ 正在执行注入式解码 (.decode(engine.decoder))...")
+    # engine.decoder 遵循 decoder 接口 (具备 .decode 方法)
+    reloaded_res.decode(engine.decoder)
     
     # 5. 再次尝试播放 (预期成功)
     if reloaded_res.audio is not None:

@@ -6,41 +6,40 @@ from safetensors.torch import save_file, load_file
 
 from export_config import MODEL_DIR, EXPORT_DIR
 
-def extract_craftsman_hf_advanced():
+def extract_predictor_hf():
     MODEL_PATH = os.path.join(MODEL_DIR, "model.safetensors")
-    OUTPUT_DIR = os.path.join(EXPORT_DIR, "craftsman_hf")
+    OUTPUT_DIR = os.path.join(EXPORT_DIR, "predictor_hf")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    print(f"--- 正在提取高级工匠权重 (15组表全量拼接) ---")
+    print(f"--- 正在提取 Predictor 权重 ---")
     
     weights = load_file(MODEL_PATH)
     
     # 1. 准备投影层
-    proj_w = weights["talker.code_predictor.small_to_mtp_projection.weight"] # [1024, 2048]
-    proj_b = weights["talker.code_predictor.small_to_mtp_projection.bias"]   # [1024]
+    proj_w = weights["talker.code_predictor.small_to_mtp_projection.weight"] 
+    proj_b = weights["talker.code_predictor.small_to_mtp_projection.bias"]   
     
-    # 2. 处理 Embedding (拼接 0-14, 共 15 个表)
+    # 2. 处理 Embedding
     emb_list = []
     for i in range(15):
         key = f"talker.code_predictor.model.codec_embedding.{i}.weight"
-        raw_emb = weights[key] # [2048, 2048]
-        # Y = X @ W.T + b
-        proj_emb = torch.nn.functional.linear(raw_emb, proj_w, proj_b) # [2048, 1024]
+        raw_emb = weights[key] 
+        proj_emb = torch.nn.functional.linear(raw_emb, proj_w, proj_b) 
         emb_list.append(proj_emb)
         print(f"Embedding {i} processed.")
         
-    cat_emb = torch.cat(emb_list, dim=0) # [30720, 1024]
+    cat_emb = torch.cat(emb_list, dim=0) 
     print(f"拼接后的 Embedding 形状: {cat_emb.shape}")
     
-    # 3. 处理 LM Head (拼接 0-14, 共 15 个表)
+    # 3. 处理 LM Head
     head_list = []
     for i in range(15):
         key = f"talker.code_predictor.lm_head.{i}.weight"
-        raw_head = weights[key] # [2048, 1024]
+        raw_head = weights[key] 
         head_list.append(raw_head)
         print(f"LM Head {i} processed.")
     
-    cat_head = torch.cat(head_list, dim=0) # [30720, 1024]
+    cat_head = torch.cat(head_list, dim=0) 
     print(f"拼接后的 LM Head 形状: {cat_head.shape}")
     
     # 4. 组装权重字典
@@ -72,7 +71,7 @@ def extract_craftsman_hf_advanced():
         "num_key_value_heads": 8,
         "head_dim": 128,
         "rms_norm_eps": 1e-06,
-        "vocab_size": 30720, # 2048 * 15
+        "vocab_size": 30720, 
         "rope_theta": 1000000.0,
         "use_cache": True,
         "tie_word_embeddings": False,
@@ -83,12 +82,12 @@ def extract_craftsman_hf_advanced():
     with open(os.path.join(OUTPUT_DIR, "config.json"), "w") as f:
         json.dump(config, f, indent=2)
         
-    # 6. 为推理提供 Numpy 资产 (免 Torch)
+    # 6. 为推理提供 Numpy 资产
     np.save(os.path.join(EXPORT_DIR, "proj_weight.npy"), proj_w.float().numpy())
     np.save(os.path.join(EXPORT_DIR, "proj_bias.npy"), proj_b.float().numpy())
     print(f"📊 额外导出 Numpy 投影层资产至: {EXPORT_DIR}")
         
-    print(f"✅ 高级工匠 HF 格式提取完成: {OUTPUT_DIR}")
+    print(f"✅ Predictor HF 格式提取完成: {OUTPUT_DIR}")
 
 if __name__ == "__main__":
-    extract_craftsman_hf_advanced()
+    extract_predictor_hf()

@@ -75,11 +75,11 @@ from export_config import EXPORT_DIR
 
 # 4. 转换主逻辑
 def main():
-    MASTER_MODEL_DIR = os.path.join(EXPORT_DIR, "hf")
+    TALKER_MODEL_DIR = os.path.join(EXPORT_DIR, "hf")
     GGUF_OUT = os.path.join(EXPORT_DIR, "qwen3_tts_talker.gguf")
 
-    print(f"--- 正在执行 GGUF 转换 (零污染、零拷贝流程) ---")
-    print(f"源目录: {MASTER_MODEL_DIR}")
+    print(f"--- 正在执行 GGUF 转换 (Talker) ---")
+    print(f"源目录: {TALKER_MODEL_DIR}")
     print(f"输出文件: {GGUF_OUT}")
 
     # [步骤 A] 检查必要文件
@@ -125,14 +125,14 @@ def main():
     # 模拟命令行参数
     sys.argv = [
         "convert_hf_to_gguf.py",
-        MASTER_MODEL_DIR,
+        TALKER_MODEL_DIR,
         "--outfile", GGUF_OUT,
         "--outtype", "f16"
     ]
     
     try:
         convert_hf_to_gguf.main()
-        print(f"\n✅ GGUF 转换成功!")
+        print(f"\n✅ Talker GGUF 转换成功!")
         print(f"输出路径: {GGUF_OUT}")
     except Exception as e:
         print(f"\n❌ 转换过程中出现错误: {e}")

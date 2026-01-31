@@ -11,7 +11,7 @@ def main():
     # 1. 配置参数
     TARGET_TEXT = "你好！这是 Qwen3-TTS 语音克隆的测试。通过调用强大的引擎，我可以精准复刻你的音色。"
     
-    REF_AUDIO = "output/sample.wav"
+    REF_AUDIO = "output/sample.json"
     REF_TEXT = "你好，我是千问，你今天过得好吗？"
 
     # 2. 初始化引擎

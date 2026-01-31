@@ -9,7 +9,7 @@ from . import llama, logger
 from .assets import AssetsManager
 from .stream import TTSStream
 from .sampler import sample
-from .mouth_decoder import create_mouth_decoder
+from .decoder import create_decoder
 from .predictors.encoder import EncoderPredictor
 
 class TTSEngine:
@@ -25,11 +25,11 @@ class TTSEngine:
         self.project_root = os.getcwd()
         self.model_dir = os.path.join(self.project_root, model_dir)
         
-        # 路径定义
+        # 路径定义 (全线标准化命名)
         self.paths = {
-            "master_gguf": os.path.join(self.model_dir, "qwen3_tts_talker.gguf"),
-            "craftsman_gguf": os.path.join(self.model_dir, "qwen3_tts_craftsman.gguf"),
-            "mouth_onnx": os.path.join(self.model_dir, "qwen3_tts_decoder_stateful.onnx"),
+            "talker_gguf": os.path.join(self.model_dir, "qwen3_tts_talker.gguf"),
+            "predictor_gguf": os.path.join(self.model_dir, "qwen3_tts_predictor.gguf"),
+            "decoder_onnx": os.path.join(self.model_dir, "qwen3_tts_decoder.onnx"),
             "codec_enc_onnx": os.path.join(self.model_dir, "qwen3_tts_codec_encoder.onnx"),
             "spk_enc_onnx": os.path.join(self.model_dir, "qwen3_tts_speaker_encoder.onnx"),
             "tokenizer": os.path.join(self.model_dir, 'tokenizer', 'tokenizer.json'),
@@ -51,16 +51,16 @@ class TTSEngine:
         self._init_llama_engines()
         if verbose: print(f"🧠 [Engine] GGUF 推理后端就绪 (耗时: {time.time()-t2:.2f}s)")
         
-        # 3. 口腔解码器渲染模块 (多进程模式)
+        # 3. 解码器渲染模块 (多进程模式)
         t3 = time.time()
-        self.mouth = create_mouth_decoder(self.paths["mouth_onnx"], use_dml=True)
+        self.decoder = create_decoder(self.paths["decoder_onnx"], use_dml=True)
         # 等待子进程就绪
         if verbose: print("⏳ [Engine] 正在拉起多进程渲染链条并等待就绪...")
-        ready = self.mouth.wait_until_ready(timeout=10)
+        ready = self.decoder.wait_until_ready(timeout=10)
         if not ready:
-            print("⚠️ [Engine] 渲染进程负载较慢，部分模块(Mouth/Speaker)未能在10s内响应就绪信号。")
+            print("⚠️ [Engine] 渲染进程负载较慢，部分模块(Decoder/Speaker)未能在10s内响应就绪信号。")
         else:
-            if verbose: print(f"✅ [Engine] 渲染链条就绪: Mouth {self.mouth.ready_states['mouth']} | Speaker {self.mouth.ready_states['speaker']} (耗时: {time.time()-t3:.2f}s)")
+            if verbose: print(f"✅ [Engine] 渲染链条就绪: Decoder {self.decoder.ready_states['decoder']} | Speaker {self.decoder.ready_states['speaker']} (耗时: {time.time()-t3:.2f}s)")
         
         # 4. 音频及说话人编码器
         t4 = time.time()
@@ -77,13 +77,13 @@ class TTSEngine:
         """初始化 GGUF 模型（仅加载模型，不创建 Context）"""
         logger.info("[Engine] 正在加载 GGUF 模型...")
         
-        m_path = os.path.relpath(self.paths["master_gguf"], os.getcwd())
-        c_path = os.path.relpath(self.paths["craftsman_gguf"], os.getcwd())
+        t_path = os.path.relpath(self.paths["talker_gguf"], os.getcwd())
+        p_path = os.path.relpath(self.paths["predictor_gguf"], os.getcwd())
         
-        self.m_model = llama.load_model(m_path, n_gpu_layers=-1)
-        self.c_model = llama.load_model(c_path, n_gpu_layers=-1)
+        self.talker_model = llama.load_model(t_path, n_gpu_layers=-1)
+        self.predictor_model = llama.load_model(p_path, n_gpu_layers=-1)
         
-        if not self.m_model or not self.c_model:
+        if not self.talker_model or not self.predictor_model:
             raise RuntimeError("GGUF 模型加载失败，请检查路径。")
             
         logger.info("✅ [Engine] GGUF 模型加载完成。")
@@ -96,16 +96,17 @@ class TTSEngine:
         """引擎内部采样辅助 (供 Stream 调用)"""
         if not do_sample:
             return int(np.argmax(logits))
+        from .sampler import sample
         return sample(logits, temperature=temperature, top_p=top_p, top_k=top_k)
 
     def shutdown(self):
         """释放资源"""
         logger.info("[Engine] 正在关闭引擎...")
         try:
-            if hasattr(self, 'mouth') and hasattr(self.mouth, 'shutdown'):
-                self.mouth.shutdown()
-            llama.llama_model_free(self.m_model)
-            llama.llama_model_free(self.c_model)
+            if hasattr(self, 'decoder') and hasattr(self.decoder, 'shutdown'):
+                self.decoder.shutdown()
+            llama.llama_model_free(self.talker_model)
+            llama.llama_model_free(self.predictor_model)
         except: pass
         logger.info("✅ [Engine] 引擎持有的模型资源已释放。")
 

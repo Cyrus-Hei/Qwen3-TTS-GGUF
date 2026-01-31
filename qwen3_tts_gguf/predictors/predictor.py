@@ -1,5 +1,5 @@
 """
-predictors/craftsman.py - 工匠预测器
+predictors/predictor.py - 工匠预测器 (Predictor)
 负责单帧 Codec 详细码 (Q1-Q15) 的阶梯式推理。
 """
 import ctypes
@@ -7,10 +7,9 @@ import numpy as np
 from .. import llama
 from ..sampler import sample
 
-class CraftsmanPredictor:
+class Predictor:
     """
-    封装工匠模型 (Craftsman/Subtalker) 的推理行为。
-    特点：每步完全重置 Context，本质上处理单帧的局部相关性。
+    封装工匠模型 (Predictor) 的推理行为。
     """
     def __init__(self, model, context, batch, assets):
         self.model = model

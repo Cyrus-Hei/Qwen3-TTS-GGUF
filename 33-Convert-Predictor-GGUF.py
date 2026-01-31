@@ -33,11 +33,11 @@ from export_config import EXPORT_DIR
 
 # 4. 转换主逻辑
 def main():
-    CRAFTSMAN_DIR = os.path.join(EXPORT_DIR, "craftsman_hf")
-    GGUF_OUT = os.path.join(EXPORT_DIR, "qwen3_tts_craftsman.gguf")
+    PREDICTOR_DIR = os.path.join(EXPORT_DIR, "predictor_hf")
+    GGUF_OUT = os.path.join(EXPORT_DIR, "qwen3_tts_predictor.gguf")
 
-    print(f"--- 正在将高级工匠组件 (30720词表) 转换为 GGUF ---")
-    print(f"源目录: {CRAFTSMAN_DIR}")
+    print(f"--- 正在将 Predictor 组件转换为 GGUF ---")
+    print(f"源目录: {PREDICTOR_DIR}")
     print(f"输出文件: {GGUF_OUT}")
 
     # 应用补丁
@@ -62,14 +62,14 @@ def main():
     # 模拟命令行参数
     sys.argv = [
         "convert_hf_to_gguf.py",
-        CRAFTSMAN_DIR,
+        PREDICTOR_DIR,
         "--outfile", GGUF_OUT,
         "--outtype", "f16"
     ]
     
     try:
         convert_hf_to_gguf.main()
-        print(f"\n✅ 高级工匠 GGUF 转换成功!")
+        print(f"\n✅ Predictor GGUF 转换成功!")
         print(f"输出路径: {GGUF_OUT}")
     except Exception as e:
         print(f"\n❌ 转换失败: {e}")

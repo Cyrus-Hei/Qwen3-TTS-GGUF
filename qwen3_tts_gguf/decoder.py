@@ -1,9 +1,9 @@
 """
-StatefulMouthDecoder - 状态化口腔解码器封装
+decoder.py - 状态化解码器封装 (Decoder)
 提供友好的对外接口，内部自动管理 KV Cache 和历史状态。
 
 使用方法:
-    decoder = StatefulMouthDecoder("model/qwen3_tts_decoder_stateful.onnx")
+    decoder = StatefulDecoder("model/qwen3_tts_decoder_stateful.onnx")
     
     # 流式调用
     for codes in code_stream:
@@ -18,9 +18,9 @@ import os
 os.environ["OMP_NUM_THREADS"] = "4"
 import numpy as np
 
-class StatefulMouthDecoder:
+class StatefulDecoder:
     """
-    状态化 ONNX 嘴巴解码器封装。
+    状态化 ONNX 解码器封装。
     
     特点:
     - 内部自动管理 KV Cache 和历史状态
@@ -175,11 +175,11 @@ import threading
 import queue
 import time
 
-class MouthProxy:
+class DecoderProxy:
     """
-    口腔解码器多进程代理。
+    解码器多进程代理 (DecoderProxy)。
     
-    它负责在独立进程中拉起 MouthWorker 和 PlaybackWorker，
+    它负责在独立进程中拉起 DecoderWorker 和 SpeakerWorker，
     并提供线程安全的任务队列接口。
     """
     def __init__(self, onnx_path: str, use_dml: bool = True):
@@ -191,18 +191,18 @@ class MouthProxy:
         self.active_task_id = 0
         
         # 通讯队列
-        self.codes_q = mp.Queue()     # 主 -> Mouth
-        self.result_q = mp.Queue()    # Mouth -> Proxy
+        self.codes_q = mp.Queue()     # 主 -> Decoder
+        self.result_q = mp.Queue()    # Decoder -> Proxy
         self.play_q = mp.Queue()      # Proxy -> Playback
         
         # 进程对象
-        self.mouth_proc = None
+        self.decoder_proc = None
         self.play_proc = None
         
         # 结果监听线程 (负责从 result_q 收集数据)
         self.results = {}             # task_id -> list of (pcm, time)
         self.streaming_results = {}   # task_id -> bool
-        self.ready_states = {"mouth": False, "speaker": False}
+        self.ready_states = {"decoder": False, "speaker": False}
         self.stop_listener = False
         self.listener_thread = None
         
@@ -215,13 +215,13 @@ class MouthProxy:
         """启动工作进程"""
         from qwen3_tts_gguf.workers import decoder_worker_proc, speaker_worker_proc
         
-        # 1. 解调子进程 (Mouth)
-        self.mouth_proc = mp.Process(
+        # 1. 解调子进程 (Decoder)
+        self.decoder_proc = mp.Process(
             target=decoder_worker_proc,
             args=(self.codes_q, self.result_q, self.onnx_path),
             daemon=True
         )
-        self.mouth_proc.start()
+        self.decoder_proc.start()
         
         # 2. 播放子进程 (Speaker)
         # 监听独立的 play_q，并向 result_q 反馈就绪状态
@@ -233,7 +233,6 @@ class MouthProxy:
         self.play_proc.start()
         
         # 3. 握手：子进程启动后会回传一条消息确认已就绪
-        # 暂时简单处理：默认假设已就绪
         self._active_provider = "Pending..."
         
         # 4. 启动本地监听器
@@ -342,14 +341,14 @@ class MouthProxy:
         
         # 1. 向子进程发送毒丸
         try:
-            if self.mouth_proc and self.mouth_proc.is_alive():
+            if self.decoder_proc and self.decoder_proc.is_alive():
                 self.codes_q.put(None)
             if self.play_proc and self.play_proc.is_alive():
                 self.play_q.put(None) # 向播放进程发送 None
         except: pass
             
         # 2. 依次清理子进程 (硬限时 join + terminate)
-        for p in [self.mouth_proc, self.play_proc]:
+        for p in [self.decoder_proc, self.play_proc]:
             if p and p.is_alive():
                 p.join(timeout=0.3) 
                 if p.is_alive():
@@ -370,8 +369,8 @@ class MouthProxy:
             except: pass
 
 # 兼容旧版 API 的工厂函数
-def create_mouth_decoder(onnx_path: str, use_dml: bool = True, multiprocessing: bool = True) -> mp.Process:
-    """创建口腔解码器实例（工厂函数）"""
+def create_decoder(onnx_path: str, use_dml: bool = True, multiprocessing: bool = True):
+    """创建解码器实例 (decoder)"""
     if multiprocessing:
-        return MouthProxy(onnx_path, use_dml)
-    return StatefulMouthDecoder(onnx_path, use_dml)
+        return DecoderProxy(onnx_path, use_dml)
+    return StatefulDecoder(onnx_path, use_dml)

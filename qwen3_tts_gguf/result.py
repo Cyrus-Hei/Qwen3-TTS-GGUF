@@ -19,22 +19,22 @@ class Timing:
     """性能耗时统计"""
     prompt_time: float = 0.0
     prefill_time: float = 0.0
-    master_loop_time: float = 0.0
-    craftsman_loop_time: float = 0.0
-    mouth_render_time: float = 0.0
+    talker_loop_time: float = 0.0
+    predictor_loop_time: float = 0.0
+    decoder_render_time: float = 0.0
     total_steps: int = 0
 
     @property
     def total_inference_time(self) -> float:
         return (self.prompt_time + self.prefill_time + 
-                self.master_loop_time + self.craftsman_loop_time + 
-                self.mouth_render_time)
+                self.talker_loop_time + self.predictor_loop_time + 
+                self.decoder_render_time)
 
     @property
     def inference_only_time(self) -> float:
-        """核心推理耗时 (不包含最终的嘴巴渲染/解码)"""
+        """核心推理耗时 (不包含最终的解码渲染)"""
         return (self.prompt_time + self.prefill_time + 
-                self.master_loop_time + self.craftsman_loop_time)
+                self.talker_loop_time + self.predictor_loop_time)
 
 @dataclass
 class LoopOutput:
@@ -46,13 +46,13 @@ class LoopOutput:
 @dataclass
 class TTSConfig:
     """推理控制参数封装"""
-    # 大师控制 (Master/Talker/Talker)
+    # 大师控制 (Talker)
     do_sample: bool = True
     temperature: float = 0.8
     top_p: float = 1.0
     top_k: int = 50
     
-    # 工匠控制 (Craftsman/Predictor/Subtalker)
+    # 工匠控制 (Predictor)
     sub_do_sample: bool = False
     sub_temperature: float = 0.5
     sub_top_p: float = 1.0
@@ -63,7 +63,7 @@ class TTSConfig:
     
     # 流式发声控制
     stream_play: bool = False       # 是否开启流式边推边播 (需要 sounddevice)
-    mouth_chunk_size: int = 25      # 流式播放时，每累积多少帧 Codec 发送给嘴巴 (默认 25 帧)
+    decoder_chunk_size: int = 25     # 流式播放时，每累积多少帧 Codec 发送给解码器 (默认 25 帧)
 
 @dataclass
 class TTSResult:
@@ -104,7 +104,7 @@ class TTSResult:
         适用于从 JSON 加载后丢失原始音频的场景。
         
         Args:
-            decoder: 具备 .decode(codes, is_final=True) 接口的对象 (如 engine.mouth)
+            decoder: 具备 .decode(codes, is_final=True) 接口的对象 (如 engine.decoder)
         """
         if self.codes is None:
             logger.error("❌ 无法进行音频解码: Codes 为空。")
@@ -118,7 +118,7 @@ class TTSResult:
             
             # 统计职责下放：如果统计对象存在，则更新它
             if self.stats:
-                self.stats.mouth_render_time = render_time
+                self.stats.decoder_render_time = render_time
                 
             return self.audio
         except Exception as e:
@@ -131,7 +131,7 @@ class TTSResult:
         """播放音频结果"""
         if self.audio is None or len(self.audio) == 0:
             if self.codes is not None:
-                logger.warning("⚠️ 此结果当前无音频数据，但检测到 Codec 特征。请先调用 .decode(engine.mouth) 进行解码渲染。")
+                logger.warning("⚠️ 此结果当前无音频数据，但检测到 Codec 特征。请先调用 .decode(engine.decoder) 进行解码渲染。")
             else:
                 logger.warning("⚠️ 此结果不包含音频数据，且无可用特征。")
             return
@@ -205,7 +205,7 @@ class TTSResult:
         return res
 
     def print_stats(self):
-        """打印性能报告"""
+        """打印性能报告报告"""
         if self.stats is None:
             print("No performance stats available for this result.")
             return
@@ -213,12 +213,12 @@ class TTSResult:
         s = self.stats
         print("-" * 40)
         print(f"性能分析报告 (音频长度: {self.duration:.2f}s | 文本长度: {len(self.text)})")
-        print(f"  1. Prompt 编译:   {s.prompt_time:.4f}s")
-        print(f"  2. 大师 Prefill:  {s.prefill_time:.4f}s")
-        print(f"  3. 自回环总计:    {s.master_loop_time + s.craftsman_loop_time:.4f}s")
-        print(f"     └─ 大师 (Master):    {s.master_loop_time:.4f}s")
-        print(f"     └─ 工匠 (Craftsman): {s.craftsman_loop_time:.4f}s")
-        print(f"  4. 嘴巴渲染 (Mouth): {s.mouth_render_time:.4f}s")
+        print(f"  1. Prompt 编译: {s.prompt_time:.4f}s")
+        print(f"  2. Talker Prefill: {s.prefill_time:.4f}s")
+        print(f"  3. 自回环总计: {s.talker_loop_time + s.predictor_loop_time:.4f}s")
+        print(f"     └─ 大师 (Talker): {s.talker_loop_time:.4f}s")
+        print(f"     └─ 工匠 (Predictor): {s.predictor_loop_time:.4f}s")
+        print(f"  4. 解码渲染 (Decoder): {s.decoder_render_time:.4f}s")
         print("-" * 40)
         print(f"核心推理耗时: {s.inference_only_time:.2f}s | RTF (Core): {self.rtf:.2f}")
         print(f"全链路总响应: {s.total_inference_time:.2f}s")
