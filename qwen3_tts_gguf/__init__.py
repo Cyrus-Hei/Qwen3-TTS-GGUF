@@ -31,13 +31,6 @@ if not logger.handlers:
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    # A. 控制台输出
-    # console_handler = logging.StreamHandler(sys.stdout)
-    # console_handler.setLevel(logging.INFO)
-    # console_handler.setFormatter(formatter)
-    # logger.addHandler(console_handler)
-
-    # B. 文件输出 (覆盖模式)
     log_file_path = os.path.join(LOG_DIR, "latest.log")
     file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
     file_handler.setLevel(logging.DEBUG)  # 文件记录更详细的信息

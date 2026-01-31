@@ -5,6 +5,7 @@ engine.py - Qwen3-TTS 核心引擎
 import os
 import ctypes
 from typing import Optional, List, Tuple
+from pathlib import Path
 from . import llama, logger
 from .assets import AssetsManager
 from .stream import TTSStream
@@ -22,93 +23,126 @@ class TTSEngine:
         from tokenizers import Tokenizer
         
         t_start = time.time()
-        self.project_root = os.getcwd()
-        self.model_dir = os.path.join(self.project_root, model_dir)
+        self.ready = False
+        self.project_root = Path.cwd()
+        self.model_dir = self.project_root / model_dir
         
-        # 路径定义 (全线标准化命名)
+        # 路径定义 (全线使用 Path 对象)
         self.paths = {
-            "talker_gguf": os.path.join(self.model_dir, "qwen3_tts_talker.gguf"),
-            "predictor_gguf": os.path.join(self.model_dir, "qwen3_tts_predictor.gguf"),
-            "decoder_onnx": os.path.join(self.model_dir, "qwen3_tts_decoder.onnx"),
-            "codec_enc_onnx": os.path.join(self.model_dir, "qwen3_tts_codec_encoder.onnx"),
-            "spk_enc_onnx": os.path.join(self.model_dir, "qwen3_tts_speaker_encoder.onnx"),
-            "tokenizer": os.path.join(self.model_dir, 'tokenizer', 'tokenizer.json'),
+            "talker_gguf": self.model_dir / "qwen3_tts_talker.gguf",
+            "predictor_gguf": self.model_dir / "qwen3_tts_predictor.gguf",
+            "decoder_onnx": self.model_dir / "qwen3_tts_decoder.onnx",
+            "codec_enc_onnx": self.model_dir / "qwen3_tts_codec_encoder.onnx",
+            "spk_enc_onnx": self.model_dir / "qwen3_tts_speaker_encoder.onnx",
+            "tokenizer": self.model_dir / 'tokenizer' / 'tokenizer.json',
         }
         
-        # 1. 资产加载
-        t1 = time.time()
-        self.assets = AssetsManager(self.model_dir)
+        # 核心文件预检
+        missing = [name for name, p in self.paths.items() 
+                  if name in ["talker_gguf", "predictor_gguf", "decoder_onnx", "tokenizer"] 
+                  and not p.exists()]
         
-        # 使用轻量级 tokenizers 库加载
-        if not os.path.exists(self.paths['tokenizer']):
-            raise FileNotFoundError(f"未找到轻量级分词文件: {self.paths['tokenizer']}。")
+        if missing:
+            logger.error(f"❌ 引擎初始化失败: 缺少核心模型文件 {missing}")
+            return
+
+        try:
+            # 1. 资产加载
+            t_assets = time.time()
+            self.assets = AssetsManager(str(self.model_dir))
+            self.tokenizer = Tokenizer.from_file(str(self.paths['tokenizer']))
+            if verbose: print(f"📦 [Engine] 资产与词表加载完成 (耗时: {time.time()-t_assets:.2f}s)")
             
-        self.tokenizer = Tokenizer.from_file(self.paths['tokenizer'])
-        if verbose: print(f"📦 [Engine] 资产与词表加载完成 (耗时: {time.time()-t1:.2f}s)")
-        
-        # 2. 模型引擎初始化
-        t2 = time.time()
-        self._init_llama_engines()
-        if verbose: print(f"🧠 [Engine] GGUF 推理后端就绪 (耗时: {time.time()-t2:.2f}s)")
-        
-        # 3. 解码器渲染模块 (多进程模式)
-        t3 = time.time()
-        self.decoder = create_decoder(self.paths["decoder_onnx"], use_dml=True)
-        # 等待子进程就绪
-        if verbose: print("⏳ [Engine] 正在拉起多进程渲染链条并等待就绪...")
-        ready = self.decoder.wait_until_ready(timeout=10)
-        if not ready:
-            print("⚠️ [Engine] 渲染进程负载较慢，部分模块(Decoder/Speaker)未能在10s内响应就绪信号。")
-        else:
-            if verbose: print(f"✅ [Engine] 渲染链条就绪: Decoder {self.decoder.ready_states['decoder']} | Speaker {self.decoder.ready_states['speaker']} (耗时: {time.time()-t3:.2f}s)")
-        
-        # 4. 音频及说话人编码器
-        t4 = time.time()
-        self.encoder = None
-        if os.path.exists(self.paths["codec_enc_onnx"]) and os.path.exists(self.paths["spk_enc_onnx"]):
-            self.encoder = EncoderPredictor(self.paths["codec_enc_onnx"], self.paths["spk_enc_onnx"], use_dml=False)
-            if verbose: print(f"🎤 [Engine] 编码器加载完成 (耗时: {time.time()-t4:.2f}s)")
-        else:
-            print("ℹ️ [Engine] 未找到编码器模型，音色克隆功能将不可用。")
+            # 2. 音频及说话人编码器 (CPU 轻量型)
+            self.encoder = None
+            if self.paths["codec_enc_onnx"].exists() and self.paths["spk_enc_onnx"].exists():
+                t_enc = time.time()
+                self.encoder = EncoderPredictor(str(self.paths["codec_enc_onnx"]), str(self.paths["spk_enc_onnx"]), use_dml=False)
+                if verbose: print(f"🎤 [Engine] 编码器加载完成 (耗时: {time.time()-t_enc:.2f}s)")
+
+            # 3. 异步拉起解码器进程 (并行点 1)
+            t_parallel = time.time()
+            self.decoder = create_decoder(str(self.paths["decoder_onnx"]), use_dml=True)
+            if verbose: print("⏳ [Engine] 正在拉起子进程解码器...")
+
+            # 4. 模型引擎初始化 (并行点 2: GGUF 在主进程加载，Decoder 在子进程同时初始化)
+            t_gguf = time.time()
+            self._init_llama_engines()
+            if verbose: print(f"🧠 [Engine] GGUF 推理后端就绪 (耗时: {time.time()-t_gguf:.2f}s)")
             
-        print(f"🚀 [Engine] 引擎全链路初始化完成! 总耗时: {time.time()-t_start:.2f}s")
+            # 5. 最后同步阻塞等待解码器信号
+            is_decoder_ready = self.decoder.wait_until_ready(timeout=10)
+            if not is_decoder_ready:
+                logger.warning("⚠️ [Engine] 解码器就绪超时，渲染功能将不可用。")
+                self.ready = False
+            else:
+                if verbose: print(f"✅ [Engine] 解码器就绪: Decoder {self.decoder.ready_states['decoder']} | Speaker {self.decoder.ready_states['speaker']} (总并行初始化耗时: {time.time()-t_parallel:.2f}s)")
+                self.ready = True
+            
+            if self.ready:
+                print(f"🚀 [Engine] 引擎全链路初始化完成! 总耗时: {time.time()-t_start:.2f}s")
+            else:
+                print(f"❌ [Engine] 引擎初始化未完全就绪 (由于解码器超时)。")
+            
+        except Exception as e:
+            logger.error(f"❌ 引擎初始化过程中出现致命异常: {e}")
+            self.shutdown()
+
+    def __bool__(self):
+        return self.ready
 
     def _init_llama_engines(self):
         """初始化 GGUF 模型（仅加载模型，不创建 Context）"""
         logger.info("[Engine] 正在加载 GGUF 模型...")
         
-        t_path = os.path.relpath(self.paths["talker_gguf"], os.getcwd())
-        p_path = os.path.relpath(self.paths["predictor_gguf"], os.getcwd())
+        # 转换相对路径以便 FFI 库能正确识别 (posix 风格字符串)
+        t_path = self.paths["talker_gguf"].relative_to(self.project_root).as_posix()
+        p_path = self.paths["predictor_gguf"].relative_to(self.project_root).as_posix()
         
-        self.talker_model = llama.load_model(t_path, n_gpu_layers=-1)
-        self.predictor_model = llama.load_model(p_path, n_gpu_layers=-1)
-        
-        if not self.talker_model or not self.predictor_model:
-            raise RuntimeError("GGUF 模型加载失败，请检查路径。")
+        try:
+            self.talker_model = llama.load_model(t_path, n_gpu_layers=-1)
+            self.predictor_model = llama.load_model(p_path, n_gpu_layers=-1)
             
-        logger.info("✅ [Engine] GGUF 模型加载完成。")
+            if not self.talker_model or not self.predictor_model:
+                raise RuntimeError("llama.load_model 返回空指针")
+            logger.info("✅ [Engine] GGUF 模型加载完成。")
+        except Exception as e:
+            logger.error(f"❌ 加载 GGUF 模型失败 (可能是显存不足/OOM): {e}")
+            raise
 
-    def create_stream(self, n_ctx=4096, voice_path: Optional[str] = None) -> TTSStream:
+    def create_stream(self, n_ctx=4096, voice_path: Optional[str] = None) -> Optional[TTSStream]:
         """工厂方法：创建语音流"""
+        if not self.ready:
+            logger.error("❌ 引擎未就绪，无法创建语音流。")
+            return None
         return TTSStream(self, n_ctx=n_ctx, voice_path=voice_path)
 
     def _do_sample(self, logits, do_sample=True, temperature=0.5, top_p=1.0, top_k=50):
-        """引擎内部采样辅助 (供 Stream 调用)"""
+        """引擎内部采样辅助"""
         if not do_sample:
+            import numpy as np
             return int(np.argmax(logits))
         from .sampler import sample
         return sample(logits, temperature=temperature, top_p=top_p, top_k=top_k)
 
     def shutdown(self):
-        """释放资源"""
-        logger.info("[Engine] 正在关闭引擎...")
-        try:
-            if hasattr(self, 'decoder') and hasattr(self.decoder, 'shutdown'):
-                self.decoder.shutdown()
-            llama.llama_model_free(self.talker_model)
-            llama.llama_model_free(self.predictor_model)
-        except: pass
-        logger.info("✅ [Engine] 引擎持有的模型资源已释放。")
+        """释放资源，支持重新开启引擎"""
+        if not hasattr(self, '_already_shutdown'):
+            logger.info("[Engine] 正在关闭引擎 (清理显存与子进程)...")
+            try:
+                if hasattr(self, "decoder"):
+                    self.decoder.shutdown()
+                if hasattr(self, "talker_model") and self.talker_model:
+                    llama.llama_model_free(self.talker_model)
+                if hasattr(self, "predictor_model") and self.predictor_model:
+                    llama.llama_model_free(self.predictor_model)
+                self.talker_model = None
+                self.predictor_model = None
+            except Exception as e:
+                logger.warning(f"⚠️ 关闭引擎时出现小异常 (忽略): {e}")
+            self.ready = False
+            self._already_shutdown = True
+            logger.info("✅ [Engine] 引擎资源已彻底释放。")
 
     def __del__(self):
         self.shutdown()

@@ -8,20 +8,23 @@ from qwen3_tts_gguf.engine import TTSEngine
 
 def main():
     # 1. 配置参数
-    TARGET_TEXT = "这条语音由 Custom 定制模型生成。正在使用 Fu 大叔音色。"
-    SPEAKER = "Fu 大叔"
+    # 官方支持音色: Vivian, Serena, Uncle_Fu, Dylan, Eric, Ryan, Aiden, Ono_Anna, Sohee
+    TARGET_TEXT = "你好，我是千问3-TTS，你今天过得好吗？"
+    SPEAKER = "Vivian"
+    INSTRUCT = "用温柔的语气说"
     
     # 2. 初始化引擎
-    print(f"🚀 [Custom-Inference] 正在初始化引擎 (Speaker: {SPEAKER})...")
+    print(f"🚀 [Custom-Inference] 正在初始化引擎")
     # 注意：如果您的定制模型放在 model-custom 目录，请指定
     engine = TTSEngine(model_dir="model-custom")
     stream = engine.create_stream()
 
     # 3. 进行推理 (调用 custom 模式)
-    print(f"🎭 正在合成...")
+    print(f"🎭 正在合成 (指令: {INSTRUCT})...")
     result = stream.custom(
         text=TARGET_TEXT,
         speaker=SPEAKER,
+        instruct=INSTRUCT,
         verbose=True
     )
     

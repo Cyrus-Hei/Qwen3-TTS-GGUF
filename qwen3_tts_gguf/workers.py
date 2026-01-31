@@ -37,7 +37,7 @@ def decoder_worker_proc(codes_queue, pcm_queue, decoder_onnx_path, record_queue=
     decoder = StatefulDecoder(decoder_onnx_path, use_dml=True)
     # 向 Proxy 发送就绪信号
     pcm_queue.put(("READY", "decoder", None, 0))
-    print(f"  🔊 [DecoderWorker] 已就绪 (Provider: {decoder.active_provider})")
+    print(f"🔊 [DecoderWorker] 已就绪 (Provider: {decoder.active_provider})")
     
     try:
         while True:
@@ -88,7 +88,7 @@ def decoder_worker_proc(codes_queue, pcm_queue, decoder_onnx_path, record_queue=
                         pcm_queue.put(("AUDIO", task_id, None, 0))
                         
                 except Exception as e:
-                    print(f"  ⚠️ [DecoderWorker] 解码异常: {e}")
+                    print(f"⚠️ [DecoderWorker] 解码异常: {e}")
                     decoder.reset()
                     pcm_queue.put(("AUDIO", task_id, np.array([], dtype=np.float32), 0))
                     if msg_type == "DECODE":
@@ -97,7 +97,7 @@ def decoder_worker_proc(codes_queue, pcm_queue, decoder_onnx_path, record_queue=
     except KeyboardInterrupt:
         pass
     except Exception as e:
-        print(f"  ❌ [DecoderWorker] 崩溃: {e}")
+        print(f"❌ [DecoderWorker] 崩溃: {e}")
         import traceback
         traceback.print_exc()
 

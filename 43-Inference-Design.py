@@ -8,11 +8,11 @@ from qwen3_tts_gguf.engine import TTSEngine
 
 def main():
     # 1. 配置参数
-    TARGET_TEXT = "这条语音由 VoiceDesign 模型生成。根据我的指令，你会听到一个非常有磁性的声音。"
-    INSTRUCT = "具有磁性的中年男性声音，语速稍慢，语气沉稳。"
+    TARGET_TEXT = "哥哥，你回来啦，人家等了你好久好久了，要抱抱！"
+    INSTRUCT = "体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显，营造出黏人、做作又刻意卖萌的听觉效果。"
     
     # 2. 初始化引擎
-    print(f"🚀 [Design-Inference] 正在初始化引擎 (Instruct: {INSTRUCT})...")
+    print(f"🚀 [Design-Inference] 正在初始化引擎...")
     # 注意：如果您的设计模型放在 model-design 目录，请指定
     engine = TTSEngine(model_dir="model-design")
     stream = engine.create_stream()

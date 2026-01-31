@@ -45,25 +45,29 @@ class LoopOutput:
 
 @dataclass
 class TTSConfig:
-    """推理控制参数封装"""
-    # 大师控制 (Talker)
-    do_sample: bool = True
-    temperature: float = 0.8
-    top_p: float = 1.0
-    top_k: int = 50
+    """
+    TTS 推理全链路控制参数封装。
+    包含 Talker (生成语义特征) 和 Predictor (生成声学码) 两个阶段的独立采样控制。
+    """
+    # --- 大师控制 (Talker / Semantic Stage) ---
+    do_sample: bool = True           # 是否开启随机采样。False 则使用 Greedy Search，结果稳定但机械。
+    temperature: float = 0.8         # 采样温度。值越大越随机(情感起伏大)，过大可能崩字；值越小越严谨。
+    top_p: float = 1.0               # 核采样阈值。只从累积概率达到 p 的 Token 中采样。
+    top_k: int = 50                  # 候选集大小。采样时只考虑概率最高的前 k 个 Token。
     
-    # 工匠控制 (Predictor)
-    sub_do_sample: bool = False
-    sub_temperature: float = 0.5
-    sub_top_p: float = 1.0
-    sub_top_k: int = 50
+    # --- 工匠控制 (Predictor / Acoustic Stage) ---
+    sub_do_sample: bool = False      # 工匠阶段通常建议 False，使用确定性生成或低温度生成以保证音频稳定。
+    sub_temperature: float = 0.5     # 工匠阶段的温度。调低可以减少语速抖动和电音感。
+    sub_top_p: float = 1.0           # 工匠阶段的 Top-P。
+    sub_top_k: int = 50              # 工匠阶段的 Top-K。
     
-    max_steps: int = 300
-    voice_clone_mode: bool = True
+    # --- 全局生成控制 ---
+    max_steps: int = 300             # 最大生成步数。决定了单次合成最长的持续时间。
+    voice_clone_mode: bool = True    # 是否启用音色克隆逻辑。
     
-    # 流式发声控制
-    stream_play: bool = False       # 是否开启流式边推边播 (需要 sounddevice)
-    decoder_chunk_size: int = 25     # 流式播放时，每累积多少帧 Codec 发送给解码器 (默认 25 帧)
+    # --- 流式与渲染控制 ---
+    stream_play: bool = False       # 是否开启流式边推边播 (需要 sounddevice)。
+    decoder_chunk_size: int = 25     # 流式播放时，每累积多少帧 Codec 特征发送给解码器 (通常 25 帧 = 1s 左右)。
 
 @dataclass
 class TTSResult:
@@ -180,20 +184,31 @@ class TTSResult:
         logger.info(f"💾 Voice JSON saved to: {path} (Light: {light})")
 
     @classmethod
-    def from_json(cls, path: str) -> 'TTSResult':
-        """从 JSON 文件恢复 Voice 锚点"""
+    def from_json(cls, path: str):
+        """从 JSON 加载锚点 (兼容性更强)"""
         if not os.path.exists(path):
             raise FileNotFoundError(f"Identity file not found: {path}")
 
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            
+        with open(path, 'r', encoding='utf-8') as f:
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON format in file '{path}': {e}")
+
+        # Use .get() for robustness against missing keys
+        # For spk_emb and codes, if they are critical for an anchor,
+        # we might want to raise an error if they are missing or provide a default that makes sense.
+        # Here, we'll make them optional for loading, but `is_valid_anchor` will check their presence.
+        spk_emb_data = data.get("spk_emb")
+        codes_data = data.get("codes")
+        text_ids_data = data.get("text_ids")
+
         res = cls(
             text=data.get("text", ""),
             info=data.get("info", ""),
-            text_ids=data["text_ids"],
-            spk_emb=np.array(data["spk_emb"], dtype=np.float32),
-            codes=np.array(data["codes"], dtype=np.int64),
+            text_ids=text_ids_data if text_ids_data is not None else [], # Default to empty list if missing
+            spk_emb=np.array(spk_emb_data, dtype=np.float32) if spk_emb_data is not None else None,
+            codes=np.array(codes_data, dtype=np.int64) if codes_data is not None else None,
         )
 
         if "summed_embeds" in data:
