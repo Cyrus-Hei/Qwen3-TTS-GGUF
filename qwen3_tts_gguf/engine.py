@@ -9,7 +9,7 @@ from pathlib import Path
 from . import llama, logger
 from .assets import AssetsManager
 from .stream import TTSStream
-from .sampler import sample
+
 from .proxy import DecoderProxy
 from .predictors.encoder import EncoderPredictor
 
@@ -100,11 +100,10 @@ class TTSEngine:
         p_path = self.paths["predictor_gguf"].relative_to(self.project_root).as_posix()
         
         try:
-            self.talker_model = llama.load_model(t_path, n_gpu_layers=-1)
-            self.predictor_model = llama.load_model(p_path, n_gpu_layers=-1)
+            # 使用新的 LlamaModel 类
+            self.talker_model = llama.LlamaModel(t_path, n_gpu_layers=-1)
+            self.predictor_model = llama.LlamaModel(p_path, n_gpu_layers=-1)
             
-            if not self.talker_model or not self.predictor_model:
-                raise RuntimeError("llama.load_model 返回空指针")
             logger.info("✅ [Engine] GGUF 模型加载完成。")
         except Exception as e:
             logger.error(f"❌ 加载 GGUF 模型失败 (可能是显存不足/OOM): {e}")
@@ -117,13 +116,7 @@ class TTSEngine:
             return None
         return TTSStream(self, n_ctx=n_ctx, voice_path=voice_path)
 
-    def _do_sample(self, logits, do_sample=True, temperature=0.5, top_p=1.0, top_k=50):
-        """引擎内部采样辅助"""
-        if not do_sample:
-            import numpy as np
-            return int(np.argmax(logits))
-        from .sampler import sample
-        return sample(logits, temperature=temperature, top_p=top_p, top_k=top_k)
+
 
     def shutdown(self):
         """释放资源，支持重新开启引擎"""
@@ -132,10 +125,7 @@ class TTSEngine:
             try:
                 if hasattr(self, "decoder"):
                     self.decoder.shutdown()
-                if hasattr(self, "talker_model") and self.talker_model:
-                    llama.llama_model_free(self.talker_model)
-                if hasattr(self, "predictor_model") and self.predictor_model:
-                    llama.llama_model_free(self.predictor_model)
+                # 显式解除引用，触发 __del__ 释放资源
                 self.talker_model = None
                 self.predictor_model = None
             except Exception as e:

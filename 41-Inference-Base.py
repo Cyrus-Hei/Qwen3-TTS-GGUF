@@ -32,7 +32,7 @@ def main():
     # 流式模式下，clone 依然会返回完整 result，但播放是并发进行的
     print(f"\n🎙️  [2/2] 开始流式推理 (边推边播)...")
     target_text = "你真是太棒啦！"
-    config = TTSConfig(temperature=0.5)
+    config = TTSConfig(temperature=0.5, max_steps=100)
     result = stream.clone(
         text=target_text,
         streaming=True,
@@ -41,8 +41,8 @@ def main():
     result.print_stats()
     
     print("⏳ 等待流式播放完成 (使用 Event 同步)...")
+    time.sleep(2)
     stream.join()
-    time.sleep(0.5)
 
     result.save("./output/clone_result.wav")     # 保存为音频
     result.save("./output/clone_result.json")    # 保存为json，内含无损的音频code

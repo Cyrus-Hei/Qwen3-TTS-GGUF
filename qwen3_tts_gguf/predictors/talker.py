@@ -7,7 +7,7 @@ import ctypes
 import numpy as np
 import time
 from .. import llama
-from ..sampler import sample
+
 from ..constants import PROTOCOL
 
 class TalkerPredictor:
@@ -23,80 +23,84 @@ class TalkerPredictor:
         self.n_ctx = 4096 # 默认上下文大小
         self.cur_pos = 0
         
+        # 预分配单步位置 Buffer (3 pos + 1 zero)
+        self.pos_step_buffer = np.zeros(4, dtype=np.int32)
+        
     def clear_memory(self):
         """完全清空 KV Cache"""
-        llama.llama_memory_clear(llama.llama_get_memory(self.ctx), True)
+        self.ctx.clear_kv_cache()
         self.cur_pos = 0
 
-    def prefill(self, prompt_embeds: np.ndarray, seq_id: int = 0) -> tuple:
+    def prefill(self, prompt_embeds: np.ndarray, seq_id: int = 0) -> np.ndarray:
         """
         全量推入初始 Prompt 或新文本批次。
         Args:
             prompt_embeds: [Batch=1, Seq, Hidden=2048]
             seq_id: 分配给此批次的序列 ID (用于精确删除)
         Returns:
-            (hidden, logits)
+            hidden: [Batch, Hidden]
         """
         n_p = prompt_embeds.shape[1]
-        self.batch.n_tokens = n_p
         
-        # 拷贝数据到批次
-        ctypes.memmove(self.batch.embd, 
-                       np.ascontiguousarray(prompt_embeds[0]).ctypes.data, 
-                       prompt_embeds[0].nbytes)
+        # 2. 构造 Qwen3 专用的位置编码 (3层Pos + 1层Zero)
+        # stride = n_p
+        pos_base = np.arange(self.cur_pos, self.cur_pos + n_p, dtype=np.int32)
+        pos_arr = np.concatenate([pos_base, pos_base, pos_base, np.zeros(n_p, dtype=np.int32)])
         
-        # 设置位置与 Logits 标记
-        for i in range(n_p):
-            # Qwen3 需要三个位置编码分量对齐 (Verified from 41-Inference.py)
-            pos_val = self.cur_pos + i
-            self.batch.pos[i] = self.batch.pos[n_p + i] = self.batch.pos[2*n_p + i] = pos_val
-            self.batch.pos[3*n_p + i] = 0
-            self.batch.n_seq_id[i] = 1
-            self.batch.seq_id[i][0] = 0 # 强制为 0 以防老旧 DLL 不支持
-            self.batch.logits[i] = 1 # 我们需要最后一个位置的 logits
+        # 使用 LlamaBatch 的高阶接口注入数据
+        self.batch.set_embd(prompt_embeds[0], pos=pos_arr, seq_id=seq_id)
             
-        llama_status = llama.llama_decode(self.ctx, self.batch)
+        llama_status = self.ctx.decode(self.batch)
         if llama_status != 0:
             raise RuntimeError(f"Master Prefill Decode failed with status {llama_status} at pos {self.cur_pos}")
 
         # 提取最后一个位置的输出
-        hidden = np.ctypeslib.as_array(llama.llama_get_embeddings(self.ctx), shape=(n_p, 2048))[-1].copy()
-        logits = np.ctypeslib.as_array(llama.llama_get_logits(self.ctx), shape=(n_p, 3072))[-1].copy()
+        hidden_ptr = self.ctx.get_embeddings()
+        
+        # [OPTIMIZATION] 移除 Logits Copy
+        # logits_ptr = self.ctx.get_logits()
+        # logits = np.ctypeslib.as_array(logits_ptr, shape=(n_p, 3072))[-1].copy()
+        
+        # 直接返回 C++ 内存的 View (切片操作本身就是 View)
+        hidden = np.ctypeslib.as_array(hidden_ptr, shape=(n_p, 2048))[-1]
         
         self.cur_pos += n_p
-        return hidden, logits
+        return hidden
 
-    def decode_step(self, feedback_embed: np.ndarray, seq_id: int = 0) -> tuple:
+    def decode_step(self, feedback_embed: np.ndarray, seq_id: int = 0) -> np.ndarray:
         """
         单步预测下一帧。
         Args:
             feedback_embed: [Hidden=2048] 汇总后的上一帧反馈向量
             seq_id: 序列 ID
         Returns:
-            (hidden, logits)
+            hidden: [1, Hidden]
         """
         # 检查上下文是否已满
         if self.cur_pos >= self.n_ctx - 1:
             raise IndexError(f"Master context overflow: {self.cur_pos} >= {self.n_ctx}")
             
-        self.batch.n_tokens = 1
-        ctypes.memmove(self.batch.embd, 
-                       feedback_embed.ctypes.data, 
-                       feedback_embed.nbytes)
+        # 构造成 (1, 2048) 注入
+        if feedback_embed.ndim == 1:
+            feedback_embed = feedback_embed.reshape(1, -1)
+            
+        # 构造 Qwen3 单步位置编码 (N=1, 3层Pos + 1层Zero)
+        # [OPTIMIZATION] 使用预分配 Buffer
+        self.pos_step_buffer[0:3] = self.cur_pos
+        # self.pos_step_buffer[3] = 0 # 已经是0了
         
-        self.batch.pos[0] = self.batch.pos[1] = self.batch.pos[2] = self.cur_pos
-        self.batch.pos[3] = 0
-        self.batch.n_seq_id[0] = 1
-        self.batch.seq_id[0][0] = 0
-        self.batch.logits[0] = 1
+        # 使用 LlamaBatch 的高阶接口注入数据
+        self.batch.set_embd(feedback_embed, pos=self.pos_step_buffer, seq_id=seq_id)
         
-        llama_status = llama.llama_decode(self.ctx, self.batch)
+        llama_status = self.ctx.decode(self.batch)
         if llama_status != 0:
             raise RuntimeError(f"Master Step Decode failed at pos {self.cur_pos}")
 
         # 提取预测结果
-        hidden = np.ctypeslib.as_array(llama.llama_get_embeddings(self.ctx), shape=(1, 2048))[0].copy()
-        logits = np.ctypeslib.as_array(llama.llama_get_logits(self.ctx), shape=(1, 3072))[0].copy()
+        hidden_ptr = self.ctx.get_embeddings()
+        
+
+        hidden = np.ctypeslib.as_array(hidden_ptr, shape=(1, 2048))[0]
         
         self.cur_pos += 1
-        return hidden, logits
+        return hidden

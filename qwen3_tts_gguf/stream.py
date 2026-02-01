@@ -42,12 +42,12 @@ class TTSStream:
 
     def _init_contexts(self):
         """初始化此语音流专属的推理环境"""
-        # 此时 engine.talker_model 是 Path 对象还是指针？在 engine.py 中它是指针。
-        self.talker_ctx = llama.create_context(self.engine.talker_model, n_ctx=self.n_ctx, embeddings=True)
-        self.predictor_ctx = llama.create_context(self.engine.predictor_model, n_ctx=512, embeddings=False)
+        # engine.talker_model 是 LlamaModel 对象
+        self.talker_ctx = llama.LlamaContext(self.engine.talker_model, n_ctx=self.n_ctx, embeddings=True)
+        self.predictor_ctx = llama.LlamaContext(self.engine.predictor_model, n_ctx=512, embeddings=False)
         
-        self.talker_batch = llama.create_batch(self.n_ctx, embd_dim=2048)
-        self.predictor_batch = llama.create_batch(32, embd_dim=1024)
+        self.talker_batch = llama.LlamaBatch(self.n_ctx, embd_dim=2048)
+        self.predictor_batch = llama.LlamaBatch(32, embd_dim=1024)
 
     # =========================================================================
     # 核心推理 API
@@ -208,42 +208,57 @@ class TTSStream:
 
         return LoopOutput(all_codes=all_codes, summed_embeds=turn_summed_embeds, timing=timing)
 
+    def _create_sampler(self, do_sample: bool, temperature: float, top_p: float, top_k: int) -> llama.LlamaSampler:
+        """创建原生采样器实例"""
+        if do_sample:
+            return llama.LlamaSampler(
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                seed=None
+            )
+        else:
+            return llama.LlamaSampler(temperature=0)
+
     def _run_engine_loop_gen(self, pdata: PromptData, cfg: TTSConfig, timing: Timing):
         t_pre_s = time.time()
-        m_hidden, m_logits = self.talker.prefill(pdata.embd, seq_id=0)
+        m_hidden = self.talker.prefill(pdata.embd, seq_id=0)
         timing.prefill_time = time.time() - t_pre_s
         
+        # 1. 初始化两级原生采样器
+        talker_sampler = self._create_sampler(cfg.do_sample, cfg.temperature, cfg.top_p, cfg.top_k)
+        predictor_sampler = self._create_sampler(cfg.sub_do_sample, cfg.sub_temperature, cfg.sub_top_p, cfg.sub_top_k)
+            
         step_idx = 0
-        for step_idx in range(cfg.max_steps):
-            # 1. 显式传递 Talker 参数 (扁平化)
-            code_0 = self.engine._do_sample(
-                m_logits, 
-                do_sample=cfg.do_sample, 
-                temperature=cfg.temperature, 
-                top_p=cfg.top_p, 
-                top_k=cfg.top_k
-            )
-            if code_0 == PROTOCOL["EOS"]:
-                break
-            
-            t_c_s = time.time()
-            # 2. 显式传递 Predictor 参数 (扁平化)
-            step_codes, step_embeds_2048 = self.predictor.predict_frame(
-                m_hidden, 
-                code_0, 
-                do_sample=cfg.sub_do_sample, 
-                temperature=cfg.sub_temperature, 
-                top_p=cfg.sub_top_p, 
-                top_k=cfg.sub_top_k
-            )
-            timing.predictor_loop_time += (time.time() - t_c_s)
-            
-            t_m_s = time.time()
-            summed = np.sum(step_embeds_2048, axis=0) + self.assets.tts_pad.flatten()
-            m_hidden, m_logits = self.talker.decode_step(summed, seq_id=0)
-            timing.talker_loop_time += (time.time() - t_m_s)
-            
-            yield step_codes, summed
+        try:
+            for step_idx in range(cfg.max_steps):
+                # ---------------- Talker Stage ----------------
+                code_0 = talker_sampler.sample(self.talker.ctx)
+                
+                if code_0 == PROTOCOL["EOS"]:
+                    break
+                
+                t_c_s = time.time()
+                
+                # ---------------- Predictor Stage ----------------
+                # 显式传递复用的采样器
+                step_codes, step_embeds_2048 = self.predictor.predict_frame(
+                    m_hidden, 
+                    code_0, 
+                    sampler=predictor_sampler
+                )
+                timing.predictor_loop_time += (time.time() - t_c_s)
+                
+                t_m_s = time.time()
+                summed = np.sum(step_embeds_2048, axis=0) + self.assets.tts_pad.flatten()
+                m_hidden = self.talker.decode_step(summed, seq_id=0)
+                timing.talker_loop_time += (time.time() - t_m_s)
+                
+                yield step_codes, summed
+                
+        finally:
+            talker_sampler.free()
+            predictor_sampler.free()
             
         timing.total_steps = len(pdata.embd) + step_idx
 
@@ -268,8 +283,8 @@ class TTSStream:
         )
 
     def reset(self):
-        self.talker_ctx.kv_cache_clear()
-        self.predictor_ctx.kv_cache_clear()
+        self.talker_ctx.clear_kv_cache()
+        self.predictor_ctx.clear_kv_cache()
         self.voice = None
         logger.info("扫 [Stream] 记忆与音色已清除。")
 
@@ -282,12 +297,11 @@ class TTSStream:
             self.decoder.join_speaker(timeout)
 
     def shutdown(self):
-        try:
-            llama.llama_batch_free(self.talker_batch)
-            llama.llama_batch_free(self.predictor_batch)
-            llama.llama_free(self.talker_ctx)
-            llama.llama_free(self.predictor_ctx)
-        except: pass
+        # 让 Python GC 处理内存释放 (_del_ 会调用 free)
+        self.talker_batch = None
+        self.talker_ctx = None
+        self.predictor_batch = None
+        self.predictor_ctx = None
 
     # =========================================================================
     # 音色设置 API (Voice Management)
