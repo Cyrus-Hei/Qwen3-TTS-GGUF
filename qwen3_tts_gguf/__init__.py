@@ -32,7 +32,7 @@ if not logger.handlers:
     )
 
     log_file_path = os.path.join(LOG_DIR, "latest.log")
-    file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
+    file_handler = logging.FileHandler(log_file_path, mode='a', encoding='utf-8')
     file_handler.setLevel(logging.DEBUG)  # 文件记录更详细的信息
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)

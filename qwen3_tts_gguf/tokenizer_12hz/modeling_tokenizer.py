@@ -204,20 +204,54 @@ class Qwen3TTSTokenizerV2CausalConvNet(nn.Module):
         return self.conv(hidden_state).contiguous()
 
 
+# class Qwen3TTSTokenizerV2CausalTransConvNet(nn.Module):
+#     def __init__(self, in_channels, out_channels, kernel_size, stride=1):
+#         super().__init__()
+#         self.conv = nn.ConvTranspose1d(in_channels, out_channels, kernel_size, stride=stride)
+
+#         pad = kernel_size - stride
+#         self.left_pad = math.ceil(pad)
+#         self.right_pad = pad = self.left_pad
+
+#     def forward(self, hidden_state):
+#         hidden_state = self.conv(hidden_state)
+#         hidden_state = hidden_state[..., self.left_pad : hidden_state.shape[-1] - self.right_pad]
+#         return hidden_state.contiguous()
+
 class Qwen3TTSTokenizerV2CausalTransConvNet(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1):
         super().__init__()
-        self.conv = nn.ConvTranspose1d(in_channels, out_channels, kernel_size, stride=stride)
+        # 修复：将 ConvTranspose1d 替换为 ConvTranspose2d，并将高度（Height）维度设为 1，解决 DML 不兼容问题
+        self.conv = nn.ConvTranspose2d(
+            in_channels, out_channels, kernel_size=(1, kernel_size), stride=(1, stride)
+        )
+
+        # 注册 Pre-hook，直接挂在算子本身，确保拦截任何级别的 load_state_dict
+        self.conv._register_load_state_dict_pre_hook(self._load_from_state_dict_1d_adapter)
 
         pad = kernel_size - stride
         self.left_pad = math.ceil(pad)
         self.right_pad = pad = self.left_pad
 
+    def _load_from_state_dict_1d_adapter(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+        """
+        处理权重的维度补齐。由于钩子直接挂在 self.conv 上，key 通常就是 'weight' 或加了 prefix 的 'weight'
+        """
+        weight_key = prefix + "weight"
+        if weight_key in state_dict:
+            weight = state_dict[weight_key]
+            if weight.dim() == 3:
+                state_dict[weight_key] = weight.unsqueeze(2)
+
     def forward(self, hidden_state):
+        # hidden_state: [B, C, T] -> [B, C, 1, T]
+        hidden_state = hidden_state.unsqueeze(2)
         hidden_state = self.conv(hidden_state)
+        # 降维：[B, C, 1, T_new] -> [B, C, T_new]
+        hidden_state = hidden_state.squeeze(2)
+        
         hidden_state = hidden_state[..., self.left_pad : hidden_state.shape[-1] - self.right_pad]
         return hidden_state.contiguous()
-
 
 class Qwen3TTSTokenizerV2ConvNeXtBlock(nn.Module):
     def __init__(self, dim: int):
@@ -361,6 +395,91 @@ class Qwen3TTSTokenizerV2DecoderAttention(nn.Module):
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        attn_output = self.o_proj(attn_output)
+        return attn_output, attn_weights
+        
+class Qwen3TTSTokenizerV2DecoderAttention(nn.Module):
+    """Multi-headed attention from 'Attention Is All You Need' paper"""
+
+    def __init__(self, config: Qwen3TTSTokenizerV2DecoderConfig, layer_idx):
+        super().__init__()
+        self.config = config
+        self.layer_idx = layer_idx
+        self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
+        self.scaling = self.head_dim**-0.5
+        self.attention_dropout = config.attention_dropout
+        self.is_causal = True
+
+        self.q_proj = nn.Linear(
+            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
+        )
+        self.k_proj = nn.Linear(
+            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
+        )
+        self.v_proj = nn.Linear(
+            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
+        )
+        self.o_proj = nn.Linear(
+            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
+        )
+        self.q_norm = nn.Identity()
+        self.k_norm = nn.Identity()
+        self.sliding_window = config.sliding_window
+
+    @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        attention_mask: Optional[torch.Tensor],
+        past_key_values: Optional[Cache] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs: Unpack[FlashAttentionKwargs],
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # 优化：使用 unflatten 代替复杂的 view(hidden_shape)，避免 DML Reshape 80070057 报错
+        # query_states: [B, N, Hidden] -> [B, N, n_heads, head_dim] -> [B, n_heads, N, head_dim]
+        query_states = self.q_norm(
+            self.q_proj(hidden_states).unflatten(-1, (self.config.num_attention_heads, self.head_dim))
+        ).transpose(1, 2)
+        
+        # key/value_states: [B, N, Hidden] -> [B, N, n_kv_heads, head_dim] -> [B, n_kv_heads, N, head_dim]
+        key_states = self.k_norm(
+            self.k_proj(hidden_states).unflatten(-1, (self.config.num_key_value_heads, self.head_dim))
+        ).transpose(1, 2)
+        
+        value_states = self.v_proj(hidden_states).unflatten(
+            -1, (self.config.num_key_value_heads, self.head_dim)
+        ).transpose(1, 2)
+
+        cos, sin = position_embeddings
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+        if past_key_values is not None:
+            # sin and cos are specific to RoPE models; cache_position needed for the static cache
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
+
+        attention_interface: Callable = eager_attention_forward
+        if self.config._attn_implementation != "eager":
+            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+
+        attn_output, attn_weights = attention_interface(
+            self,
+            query_states,
+            key_states,
+            value_states,
+            attention_mask,
+            dropout=0.0 if not self.training else self.attention_dropout,
+            scaling=self.scaling,
+            sliding_window=self.sliding_window,  # diff with Llama
+            **kwargs,
+        )
+
+        # 优化：使用 flatten(2) 合并多头，代替依赖 input_shape 的 reshape
+        # 注意：这里的 attention_interface 返回的是 [B, N, n_heads, head_dim]
+        # 直接 flatten(2) 即可得到 [B, N, Hidden]
+        attn_output = attn_output.flatten(2).contiguous()
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
 
