@@ -4,6 +4,7 @@ import time
 import torch
 import soundfile as sf
 import subprocess
+from export_config import MODEL_DIR 
 
 # Add current directory to project root
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -29,14 +30,14 @@ def main():
     print(f"Using device: {device}")
 
     # Local model path
-    MODEL_PATH = os.path.abspath("Qwen3-TTS-12Hz-1.7B-CustomVoice")
+    # MODEL_DIR = os.path.abspath("Qwen3-TTS-12Hz-1.7B-CustomVoice")
     
     # Check if model exists
-    if not os.path.exists(MODEL_PATH):
-        print(f"Error: Model path not found: {MODEL_PATH}")
+    if not os.path.exists(MODEL_DIR):
+        print(f"Error: Model path not found: {MODEL_DIR}")
         return
 
-    print(f"Loading model from: {MODEL_PATH}")
+    print(f"Loading model from: {MODEL_DIR}")
     
     try:
         # Measure Model Loading Time
@@ -47,7 +48,7 @@ def main():
         
         t_load_start = time.time()
         tts = Qwen3TTSModel.from_pretrained(
-            MODEL_PATH,
+            MODEL_DIR,
             device_map=device,
             dtype=dtype,
             # attn_implementation="flash_attention_2" # Comment out if no flash attn support on Windows/CPU
