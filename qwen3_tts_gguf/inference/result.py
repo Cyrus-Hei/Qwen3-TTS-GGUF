@@ -48,11 +48,13 @@ class TTSResult:
     """TTS 合成结果 (同时也是音色锚点)"""
     # 核心特征 (锚点要素)
     text: str                               # 文字内容
-    spk_emb: np.ndarray                     # 全局音色向量 (2048)
     text_ids: List[int]                     # 文本 Token IDs
     codes: np.ndarray                       # 音频 Codec IDs (T, 16)
-    summed_embeds: Optional[List[np.ndarray]] = None # 音频叠加特征 (T, 2048) - 可选
+    spk_emb: np.ndarray                     # 全局音色向量 (2048)
+    
+    # 选填与备注
     info: str = ""                          # 备注信息 (如音色描述)
+    summed_embeds: Optional[List[np.ndarray]] = None # 音频叠加特征 (T, 2048) - 可选
     
     # 产出附件 (可选)
     audio: Optional[np.ndarray] = None      # 音频波形 (PCM float32)
@@ -120,12 +122,17 @@ class TTSResult:
             logger.warning("⚠️ Result is incomplete, cannot save as anchor.")
             return
         
+        # 优化：spk_emb 采用 fp16 + Base64 存储以节省空间
+        import base64
+        spk_fp16 = self.spk_emb.astype(np.float16).tobytes()
+        spk_b64 = base64.b64encode(spk_fp16).decode('ascii')
+
         data = {
-            "text": self.text,
             "info": self.info,
+            "text": self.text,
             "text_ids": self.text_ids,
             "codes": self.codes.tolist(),
-            "spk_emb": self.spk_emb.tolist(),
+            "spk_emb": spk_b64,  # 使用 Base64 字符串
         }
 
         if include_embeds and self.summed_embeds is not None:
@@ -142,29 +149,38 @@ class TTSResult:
 
     @classmethod
     def from_json(cls, path: str):
-        """从 JSON 加载锚点 (兼容性更强)"""
+        """从 JSON 加载锚点 (支持 Base64 和旧列表格式)"""
         if not os.path.exists(path):
             raise FileNotFoundError(f"Identity file not found: {path}")
 
+        import base64
         with open(path, 'r', encoding='utf-8') as f:
             try:
                 data = json.load(f)
             except json.JSONDecodeError as e:
                 raise ValueError(f"Invalid JSON format in file '{path}': {e}")
 
-        # Use .get() for robustness against missing keys
-        # For spk_emb and codes, if they are critical for an anchor,
-        # we might want to raise an error if they are missing or provide a default that makes sense.
-        # Here, we'll make them optional for loading, but `is_valid_anchor` will check their presence.
-        spk_emb_data = data.get("spk_emb")
+        spk_data = data.get("spk_emb")
         codes_data = data.get("codes")
         text_ids_data = data.get("text_ids")
+
+        # 解析 spk_emb: 支持 Base64(fp16) 字符串和原始 List(fp32)
+        spk_emb = None
+        if isinstance(spk_data, str):
+            try:
+                # 尝试 Base64 解码，假定为 fp16
+                raw_bytes = base64.b64decode(spk_data)
+                spk_emb = np.frombuffer(raw_bytes, dtype=np.float16).astype(np.float32)
+            except Exception as e:
+                logger.error(f"❌ Failed to decode Base64 spk_emb: {e}")
+        elif isinstance(spk_data, list):
+            spk_emb = np.array(spk_data, dtype=np.float32)
 
         res = cls(
             text=data.get("text", ""),
             info=data.get("info", ""),
-            text_ids=text_ids_data if text_ids_data is not None else [], # Default to empty list if missing
-            spk_emb=np.array(spk_emb_data, dtype=np.float32) if spk_emb_data is not None else None,
+            text_ids=text_ids_data if text_ids_data is not None else [],
+            spk_emb=spk_emb,
             codes=np.array(codes_data, dtype=np.int64) if codes_data is not None else None,
         )
 
