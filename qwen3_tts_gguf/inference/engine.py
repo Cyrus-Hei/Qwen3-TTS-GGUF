@@ -5,6 +5,7 @@ engine.py - Qwen3-TTS 核心引擎
 import os
 import ctypes
 from typing import Optional, List, Tuple
+import numpy as np
 from pathlib import Path
 from . import llama, logger
 from .assets import AssetsManager
@@ -117,6 +118,13 @@ class TTSEngine:
             logger.error("❌ 引擎未就绪，无法创建语音流。")
             return None
         return TTSStream(self, n_ctx=n_ctx, voice_path=voice_path)
+
+    def encode(self, input) -> Optional[np.ndarray]:
+        """快捷入口：提取音色特征 (Speaker Embedding)。支持传入 numpy 数组或 TTSResult。"""
+        if self.speaker_encoder is None:
+            logger.error("❌ SpeakerEncoder 未就绪，无法执行编码。")
+            return None
+        return self.speaker_encoder.encode(input)
 
 
 

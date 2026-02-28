@@ -1,7 +1,9 @@
 import os
+from typing import Union
 import numpy as np
 import onnxruntime as ort
 from . import logger
+from .result import TTSResult
 from .utils.mel import MelExtractor
 from .utils.audio import preprocess_audio
 
@@ -44,11 +46,8 @@ class SpeakerEncoder:
         self.active_provider = self.sess.get_providers()[0]
         logger.info(f"✅ [SpeakerEncoder] 已就绪 ({self.active_provider})")
 
-    def encode(self, wav: np.ndarray) -> np.ndarray:
-        """
-        输入: wav [samples] (float32)
-        返回: spk_emb [2048] (float32)
-        """
+    def encode_audio(self, wav: np.ndarray) -> np.ndarray:
+        """从音频提取 Speaker Embedding"""
         mels = self.mel_extractor.extract(wav)
         mels_input = mels[np.newaxis, ...].astype(np.float32) # [1, T, 128]
         
@@ -57,3 +56,26 @@ class SpeakerEncoder:
             {'mels': mels_input}
         )
         return s_out[0][0] # [2048]
+
+    def encode(self, input: Union[np.ndarray, TTSResult]) -> np.ndarray:
+        """
+        输入: 
+            wav: [samples] (float32) 或 TTSResult 对象
+        返回: 
+            spk_emb [2048] (float32)
+        """
+
+        if isinstance(input, TTSResult):
+            wav = input.audio
+            if not wav:
+                logger.warning("⚠️ TTSResult 中不包含音频数据，跳过特征提取过程。")
+                return input.spk_emb
+            spk_emb = self.encode_audio(wav)
+            input.spk_emb = spk_emb
+        else:
+            wav = input
+            spk_emb = self.encode_audio(wav)
+            
+            
+        return spk_emb
+
