@@ -59,14 +59,15 @@ def main():
 
     # 流式模式下，clone 依然会返回完整 result，但播放是并发进行的
     print(f"\n🎙️  [2/2] 开始流式推理 (边推边播)...")
-    target_text = "既然 GGUF 在第 45 步已经采样到了 2150 (EOS)，而官方数据在那里依然是 808（普通的码本），说明模型已经“想停了”。但由于 103 脚本强制它继续跑到了 100 步，它在 EOS 之后进入了无意义的重复状态（你会发现到了 63 步之后，它一直在复读 1657）"
-    config = TTSConfig(max_steps=100, do_sample=False, sub_do_sample=False)
-    config = TTSConfig(max_steps=400, temperature=0.4, sub_temperature=0)
+    target_text = "我的功能可以描述为：Intelligent Text Understanding and Voice Control"
+    config = TTSConfig(max_steps=400, temperature=0.8, sub_temperature=0.8, seed=42)
     result = stream.clone(
-        text=target_text,
+        text=target_text, 
+        language='Chinese', 
         streaming=True,
         verbose=True, 
         config = config, 
+        chunk_size=25,
     )
     result.print_stats()
     
