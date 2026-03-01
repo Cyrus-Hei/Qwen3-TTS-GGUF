@@ -380,8 +380,15 @@ class TTSStream:
 
     def _set_voice_from_result(self, res: TTSResult) -> bool:
         if not res.is_valid_anchor:
-            logger.error("❌ 提供的 TTSResult 不是有效的音色锚点 (缺少 codes 或 spk_emb)。")
             return False
+            
+        # 如果维度不匹配，执行重编码转换
+        if res.spk_emb.shape[-1] != self.engine.talker_model.n_embd:
+            logger.info(f"🔄 [Stream] 维度不匹配 ({res.spk_emb.shape[-1]}->{self.engine.talker_model.n_embd})，正在转换...")
+            if res.audio is None:
+                self.engine.decode(res)
+            self.engine.encode(res)
+
         self.voice = res
         logger.info(f"🎭 音色已切换为: {res.text[:20]}...")
         return True

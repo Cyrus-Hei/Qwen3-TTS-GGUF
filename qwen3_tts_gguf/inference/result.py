@@ -217,7 +217,7 @@ class TTSResult:
 
         spk_data = data["spk_emb"]
         if isinstance(spk_data, list):
-            if len(spk_data) != 2048:
+            if len(spk_data) not in [1024, 2048]:
                 logger.warning(f"⚠️ 'spk_emb' 列表维度必须为 2048，实际为 {len(spk_data)} at {path}")
                 return False
         elif isinstance(spk_data, str):
@@ -227,7 +227,7 @@ class TTSResult:
             except Exception as e:
                 logger.warning(f"⚠️ 'spk_emb' Base64 解码失败: {e} at {path}")
                 return False
-            if len(spk_arr) != 2048:
+            if len(spk_arr) not in [1024, 2048]:
                 logger.warning(f"⚠️ 'spk_emb' 解码后维度错误: {len(spk_arr)}，期望 2048 at {path}")
                 return False
         else:
