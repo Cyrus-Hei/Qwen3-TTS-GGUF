@@ -21,8 +21,13 @@ class CodecEncoder:
         
         logger.info(f"[CodecEncoder] 正在初始化 ONNX 会话...")
         self.sess = ort.InferenceSession(onnx_path, sess_options=sess_opts, providers=providers)
+        
+        # 动态检测输入类型
+        input_info = self.sess.get_inputs()[0]
+        self.dtype = np.float16 if "float16" in input_info.type else np.float32
+        
         self.active_provider = self.sess.get_providers()[0]
-        logger.info(f"✅ [CodecEncoder] 已就绪 ({self.active_provider})")
+        logger.info(f"✅ [CodecEncoder] 已就绪 ({self.active_provider}), 精度: {self.dtype.__name__}")
 
     def encode(self, wav: np.ndarray) -> np.ndarray:
         """
@@ -31,7 +36,7 @@ class CodecEncoder:
         """
         c_out = self.sess.run(
             ['audio_codes'], 
-            {'input_values': wav.reshape(1, -1).astype(np.float32)}
+            {'input_values': wav.reshape(1, -1).astype(self.dtype)}
         )
         return c_out[0][0] # [T, 16]
 
@@ -51,17 +56,21 @@ class SpeakerEncoder:
         logger.info(f"[SpeakerEncoder] 正在初始化 ONNX 会话...")
         self.sess = ort.InferenceSession(onnx_path, sess_options=sess_opts, providers=providers)
         
+        # 动态检测输入类型
+        input_info = self.sess.get_inputs()[0]
+        self.dtype = np.float16 if "float16" in input_info.type else np.float32
+
         # 初始化 Mel 提取器 (纯 NumPy/SciPy 对齐版)
         self.mel_extractor = MelExtractor(
             sr=24000, n_fft=1024, hop_length=256, n_mels=128, fmin=0.0, fmax=12000.0
         )
         self.active_provider = self.sess.get_providers()[0]
-        logger.info(f"✅ [SpeakerEncoder] 已就绪 ({self.active_provider})")
+        logger.info(f"✅ [SpeakerEncoder] 已就绪 ({self.active_provider}), 精度: {self.dtype.__name__}")
 
     def encode_audio(self, wav: np.ndarray) -> np.ndarray:
         """从音频提取 Speaker Embedding"""
         mels = self.mel_extractor.extract(wav)
-        mels_input = mels[np.newaxis, ...].astype(np.float32) # [1, T, 128]
+        mels_input = mels[np.newaxis, ...].astype(self.dtype) # [1, T, 128]
         
         s_out = self.sess.run(
             ['spk_emb'], 

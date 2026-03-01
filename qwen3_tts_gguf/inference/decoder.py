@@ -17,6 +17,7 @@ decoder.py - 状态化解码器封装 (Decoder)
 import os
 os.environ["OMP_NUM_THREADS"] = "4"
 import numpy as np
+from . import logger
 
 class StatefulDecoder:
     """
@@ -66,10 +67,17 @@ class StatefulDecoder:
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
         self.sess = ort.InferenceSession(onnx_path, sess_options=sess_opts, providers=providers)
+        
+        # 动态检测输入类型 (跳过第一个整数类型的 audio_codes)
+        float_input = next(i for i in self.sess.get_inputs() if "float" in i.type)
+        self.dtype = np.float16 if "float16" in float_input.type else np.float32
+        
         self.output_names = [out.name for out in self.sess.get_outputs()]
         
         # 获取实际使用的 provider
         self.active_provider = self.sess.get_providers()[0]
+        
+        logger.info(f"✅ [Decoder] 已就绪 ({self.active_provider}), 精度: {self.dtype.__name__}")
         
         # 初始化状态 (工厂调用)
         self.create_state()
@@ -79,23 +87,21 @@ class StatefulDecoder:
         创建一个全新的、空的解码器状态。
         
         Returns:
-            DecoderState: 包含全 0 初始化的状态对象
+            DecoderState: 包含初始化的状态对象
         """
         from .protocol import DecoderState
         
-        pre_conv_history = np.zeros((1, 512, 0), dtype=np.float32)
-        latent_buffer = np.zeros((1, 1024, 0), dtype=np.float32)
-        conv_history = np.zeros((1, 1024, 0), dtype=np.float32)
+        pre_conv_history = np.zeros((1, 512, 0), dtype=self.dtype)
+        latent_buffer = np.zeros((1, 1024, 0), dtype=self.dtype)
+        conv_history = np.zeros((1, 1024, 0), dtype=self.dtype)
         
         # KV Cache: [NUM_LAYERS] 个 Key + [NUM_LAYERS] 个 Value
-        # 展平成一个列表: [k0, k1... v0, v1...] 或者交替？onnx inputs 是 past_key_0, past_value_0...
-        # 我们的 protocol 定义 kv_cache 是 List[np.ndarray]，顺序需严格匹配
         kv_cache = []
         for _ in range(self.NUM_LAYERS):
             # Key
-            kv_cache.append(np.zeros((1, self.NUM_HEADS, 0, self.HEAD_DIM), dtype=np.float32))
+            kv_cache.append(np.zeros((1, self.NUM_HEADS, 0, self.HEAD_DIM), dtype=self.dtype))
             # Value 
-            kv_cache.append(np.zeros((1, self.NUM_HEADS, 0, self.HEAD_DIM), dtype=np.float32))
+            kv_cache.append(np.zeros((1, self.NUM_HEADS, 0, self.HEAD_DIM), dtype=self.dtype))
             
         return DecoderState(
             pre_conv_history=pre_conv_history,
@@ -116,7 +122,7 @@ class StatefulDecoder:
         Returns:
             (audio, new_state): 
                 audio: 生成的波形
-                new_state: 更新后的状态对象 (如果 is_final=True，则可能返回空状态或脏状态，视具体需求而定，但 caller 应该销毁它)
+                new_state: 更新后的状态对象
         """
         if state is None:
             state = self.create_state()
@@ -134,7 +140,7 @@ class StatefulDecoder:
         # 构建输入 feed dict
         feed = {
             "audio_codes": audio_codes,
-            "is_last": np.array([1.0 if is_final else 0.0], dtype=np.float32),
+            "is_last": np.array([1.0 if is_final else 0.0], dtype=self.dtype),
             "pre_conv_history": state.pre_conv_history,
             "latent_buffer": state.latent_buffer,
             "conv_history": state.conv_history,

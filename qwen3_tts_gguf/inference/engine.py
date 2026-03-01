@@ -32,9 +32,9 @@ class TTSEngine:
         self.paths = {
             "talker_gguf": self.model_dir / "qwen3_tts_talker.q4_k.gguf",
             "predictor_gguf": self.model_dir / "qwen3_tts_predictor.q4_k.gguf",
-            "decoder_onnx": self.model_dir / "qwen3_tts_decoder.fp32.onnx",
-            "codec_enc_onnx": self.model_dir / "qwen3_tts_codec_encoder.fp32.onnx",
-            "spk_enc_onnx": self.model_dir / "qwen3_tts_speaker_encoder.fp32.onnx",
+            "decoder_onnx": self.model_dir / "qwen3_tts_decoder.fp16.onnx",
+            "codec_enc_onnx": self.model_dir / "qwen3_tts_codec_encoder.fp16.onnx",
+            "spk_enc_onnx": self.model_dir / "qwen3_tts_speaker_encoder.fp16.onnx",
             "tokenizer": self.model_dir / 'tokenizer.json',
         }
         
