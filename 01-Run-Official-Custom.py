@@ -10,9 +10,11 @@ import functools
 import types
 import traceback
 from pathlib import Path
-from export_config import MODEL_CUSTOM as MODEL_DIR
+from export_config import Models; MODEL_DIR = Models.custom.source
 from qwen3_tts_gguf.inference.result import TTSResult, Timing
 from qwen3_tts_gguf.inference.capturer import OfficialCapturer
+
+
 
 ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR / "Qwen3-TTS-main"))
