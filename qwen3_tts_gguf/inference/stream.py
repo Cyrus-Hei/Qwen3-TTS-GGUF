@@ -41,6 +41,7 @@ class TTSStream:
             self.set_voice(voice_path)
             
         self.decoder = getattr(engine, 'decoder', None)
+        self.task_counter = 0 # 任务计数器，用于生成唯一 task_id
 
     def _init_contexts(self):
         """初始化此语音流专属的推理环境"""
@@ -201,6 +202,12 @@ class TTSStream:
             logger.info("[Stream] 检测到解码器，准备流式输出")
             
         step_count = 0
+        
+        # 每次推理生成一个唯一的 task_id
+        current_task_id = f"task_{self.task_counter}"
+        self.task_counter += 1
+        last_chunk_time = time.time()
+        
         for step_codes, summed_vec in self._run_engine_loop_gen(pdata, cfg, timing):
             step_count += 1
             all_codes.append(step_codes) # 保持 numpy 状态，供 decoder 使用
@@ -208,17 +215,32 @@ class TTSStream:
             
             if step_count % 50 == 0:
                 logger.info(f"[Stream] 正在生成... 已完成 {step_count} 步")
+            
+            # 累积到 chunk_buffer
+            chunk_buffer.append(step_codes)
 
-            if streaming and self.decoder:
-                chunk_buffer.append(step_codes)
-                if len(chunk_buffer) >= chunk_size:
-                    self.decoder.decode(np.array(chunk_buffer), is_final=False, stream=True)
-                    chunk_buffer = []
+            if not streaming or len(chunk_buffer) < chunk_size:
+                continue
+
+            # 记录该 chunk 的生成耗时 
+            timing.chunk_gen_times.append(time.time() - last_chunk_time); last_chunk_time = time.time()
+            
+            # 解码 chunk
+            self.decoder.decode(np.array(chunk_buffer), task_id=current_task_id, is_final=False, stream=streaming)
+            
+            # 清空 chunk_buffer 以积累下一批
+            chunk_buffer = []
 
         logger.info(f"[Stream] 推理循环结束，共 {step_count} 步")
 
-        if streaming and self.decoder:
-            self.decoder.decode(np.array(chunk_buffer) if chunk_buffer else np.zeros((0, 16)), is_final=True, stream=True)
+        # 最后一个 chunk，此时 decode 会返回 DecodeResult
+        decoder_result = self.decoder.decode(
+            np.array(chunk_buffer) if chunk_buffer else np.zeros((0, 16)), 
+            task_id=current_task_id, is_final=True, stream=streaming
+        )
+        
+        # 记录 decoder 的每一个 chunk 的耗时
+        timing.decoder_compute_times = decoder_result.chunk_compute_times
 
         return LoopOutput(all_codes=all_codes, summed_embeds=turn_summed_embeds, timing=timing)
 
@@ -288,21 +310,21 @@ class TTSStream:
                 
                 # ---------------- Predictor Stage ----------------
                 # 根据第 0 层码本和 Talker 隐层，预测完整的 16 层码本
+                t_c_s = time.time()
                 step_codes, step_embeds_2048 = self.predictor.predict_frame(
                     m_hidden, 
                     code_0, 
                     sampler=predictor_sampler
                 )
-                timing.predictor_loop_time += (time.time() - t_c_s)
+                timing.predictor_loop_times.append(time.time() - t_c_s)
                 
                 # ---------------- Feedback Stage ----------------
                 t_m_s = time.time()
                 # 汇总 16 层音频 Embedding
                 audio_summed = np.sum(step_embeds_2048, axis=0) 
-                
                 # 反馈给 Talker。Talker 内部会自动执行 [Audio + Text] 融合
                 m_hidden = self.talker.decode_step(audio_summed, seq_id=0)
-                timing.talker_loop_time += (time.time() - t_m_s)
+                timing.talker_loop_times.append(time.time() - t_m_s)
                 
                 yield step_codes, audio_summed
                 
@@ -319,8 +341,9 @@ class TTSStream:
         audio = None
         if self.decoder:
             t0 = time.time()
-            audio = self.decoder.decode(np.array(lout.all_codes), is_final=True, stream=False)
-            lout.timing.decoder_render_time = time.time() - t0
+            d_res = self.decoder.decode(np.array(lout.all_codes), is_final=True, stream=False)
+            audio = d_res.audio
+            lout.timing.decoder_compute_times = d_res.chunk_compute_times
 
         return TTSResult(
             audio=audio,

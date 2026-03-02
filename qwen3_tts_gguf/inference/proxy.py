@@ -11,7 +11,7 @@ import numpy as np
 from typing import Optional, Union
 from .result import TTSResult
 
-from .protocol import DecodeRequest, DecoderResponse, SpeakerRequest, SpeakerResponse
+from .protocol import DecodeRequest, DecoderResponse, SpeakerRequest, SpeakerResponse, DecodeResult
 
 class DecoderProxy:
     """
@@ -112,17 +112,18 @@ class DecoderProxy:
             
         task_id = msg.task_id
         
-        # A1. 音频碎片的累积 (储蓄罐)
+        # A1. 消息累积 (储蓄罐)
         if msg.msg_type == "AUDIO":
-            pcm = msg.audio
-            if pcm is not None and len(pcm) > 0:
-                if task_id not in self.results:
-                    self.results[task_id] = []
-                self.results[task_id].append(pcm)
-                
-                # 如果该任务标记为实时流式播放，同步转发给播放器线路
-                if self.streaming_results.get(task_id):
-                    self.play_q.put(SpeakerRequest(msg_type="AUDIO", audio=pcm))
+            msg.recv_time = time.time() # 记录 Proxy 收到音频的具体时刻
+            if task_id not in self.results:
+                self.results[task_id] = []
+            
+            # 存储完整消息对象，以保留 compute_time
+            self.results[task_id].append(msg)
+            
+            # 如果该任务标记为实时流式播放，同步转发给播放器线路
+            if self.streaming_results.get(task_id):
+                self.play_q.put(SpeakerRequest(msg_type="AUDIO", audio=msg.audio))
 
         # A2. 收到结束信号 (闹钟)
         elif msg.msg_type == "FINISH":
@@ -211,14 +212,14 @@ class DecoderProxy:
             return np.array([], dtype=np.float32)
         
         # 逻辑分支 B: 离线模式或流式终包，开始同步等待
-        self.events[task_id].wait(timeout=30.0) # 30秒硬限制
+        self.events[task_id].wait(timeout=30.0)
         
-        collected_pcm = self.results.get(task_id, [])
-        if not collected_pcm:
-            return np.array([], dtype=np.float32)
+        # 从消息列表中提取音频碎片和统计信息
+        responses = self.results.get(task_id, [])
+        
+        # 结果打包
+        result = DecodeResult(responses=responses)
             
-        final_pcm = np.concatenate(collected_pcm)
-        
         # 清理该任务的残留资源
         if task_id in self.results: del self.results[task_id]
         if task_id in self.events: del self.events[task_id]
@@ -226,11 +227,16 @@ class DecoderProxy:
 
         # 结果回写 (如果输入是对象)
         if isinstance(input, TTSResult):
-            input.audio = final_pcm
+            input.audio = result.audio
             if input.stats:
-                input.stats.decoder_render_time = time.time() - t_start
+                input.stats.decoder_compute_times = result.chunk_compute_times
         
-        return final_pcm
+        return result
+
+    def get_decode_result(self, task_id) -> DecodeResult:
+        """从储蓄罐中提取已有的 DecodeResult（用于流式过程中的快照统计）"""
+        responses = self.results.get(task_id, [])
+        return DecodeResult(responses=responses)
 
     def pause(self):
         """发送暂停指令"""
