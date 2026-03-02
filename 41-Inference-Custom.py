@@ -190,7 +190,6 @@ def main():
         seed=42, 
         sub_seed=45,
         streaming=True,
-        chunk_size=12
     )
 
     # 遍历任务

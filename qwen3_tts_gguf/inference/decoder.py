@@ -40,15 +40,18 @@ class StatefulDecoder:
     KV_CACHE_WINDOW = 72
     SAMPLES_PER_FRAME = 1920
     
-    def __init__(self, onnx_path: str, use_dml: bool = True):
+    def __init__(self, onnx_path: str, use_dml: bool = True, chunk_size: int = 8):
         """
         初始化解码器。
         
         Args:
             onnx_path: 状态化 ONNX 模型路径
             use_dml: 是否尝试使用 DirectML 加速 (Windows GPU)
+            chunk_size: 解码批大小，防止 VRAM 溢出
         """
         import onnxruntime as ort
+        
+        self.chunk_size = chunk_size
         
         if not os.path.exists(onnx_path):
             raise FileNotFoundError(f"ONNX 模型不存在: {onnx_path}")
@@ -78,7 +81,7 @@ class StatefulDecoder:
         self.active_provider = self.sess.get_providers()[0]
         
         # 预热
-        warmup_codes = np.zeros((8, 16), dtype=np.int64)
+        warmup_codes = np.zeros((self.chunk_size, 16), dtype=np.int64)
         self.decode(warmup_codes, is_final=True)
 
         logger.info(f"✅ [Decoder] 已就绪 ({self.active_provider}), 精度: {self.dtype.__name__}")
@@ -114,7 +117,7 @@ class StatefulDecoder:
     
     def decode(self, audio_codes: np.ndarray, state: "DecoderState" = None, is_final: bool = False):
         """
-        [对外封装] 对多于 45 帧的 codes 分批解码，防止 VRAM 溢出。
+        [对外封装] 对多于 self.chunk_size 帧的 codes 分批解码，防止 VRAM 溢出。
         """
         # 输入规范化获取长度
         if audio_codes.ndim == 2:
@@ -124,11 +127,11 @@ class StatefulDecoder:
         else:
             n_frames = len(audio_codes)
 
-        if n_frames <= 45:
+        if n_frames <= self.chunk_size:
             return self._decode(audio_codes, state=state, is_final=is_final)
             
         # 批量解码逻辑
-        chunk_size = 45
+        chunk_size = self.chunk_size
         full_audio = []
         curr_state = state
         
@@ -146,7 +149,7 @@ class StatefulDecoder:
 
     def _decode(self, audio_codes: np.ndarray, state: "DecoderState" = None, is_final: bool = False):
         """
-        底层原子解码 (Stateless Decode)。一次最多建议 45 帧。
+        底层原子解码 (Stateless Decode)。一次最多建议 self.chunk_size 帧。
         
         Args:
             audio_codes: 音频码 [N, 16]

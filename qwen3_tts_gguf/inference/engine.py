@@ -17,7 +17,7 @@ class TTSEngine:
     """
     Qwen3-TTS 引擎：资源池与 Stream 工厂。
     """
-    def __init__(self, model_dir="model", verbose=True):
+    def __init__(self, model_dir="model", chunk_size=8, verbose=True):
         import time
         import numpy as np
         from tokenizers import Tokenizer
@@ -26,6 +26,7 @@ class TTSEngine:
         self.ready = False
         self.project_root = Path.cwd()
         self.model_dir = self.project_root / model_dir
+        self.chunk_size = chunk_size
         
         # 路径定义 (全线使用 Path 对象)
         self.paths = {
@@ -64,7 +65,7 @@ class TTSEngine:
 
             # 3. 异步拉起解码器进程 (并行点 1)
             t_parallel = time.time()
-            self.decoder = DecoderProxy(str(self.paths["decoder_onnx"]), use_dml=True)
+            self.decoder = DecoderProxy(str(self.paths["decoder_onnx"]), use_dml=True, chunk_size=self.chunk_size)
             if verbose: print("⏳ [Engine] 正在拉起子进程解码器...")
 
             # 4. 模型引擎初始化 (并行点 2: GGUF 在主进程加载，Decoder 在子进程同时初始化)

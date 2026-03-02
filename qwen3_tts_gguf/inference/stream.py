@@ -73,7 +73,6 @@ class TTSStream:
                 - 'beijing_dialect' , 'sichuan_dialect' 
             config: 推理配置对象 (TTSConfig)，可控制 Temperature, Top-P 等采样参数。
             streaming: 是否启用流式推理。若为 True，则边推理边向播放器推送数据。
-            chunk_size: 流式推理时，每积压多少帧特征码即送去解码播放一次。越小延迟越低，但每次解码会有8帧的额外计算。
 
         Returns:
             TTSResult 对象，包含完整音频、特征码及性能统计。
@@ -121,7 +120,6 @@ class TTSStream:
             instruct: 渲染指令，如 "用温柔的语气说" 或 "充满活力的播报"。
             config: 推理配置对象 (TTSConfig)。
             streaming: 是否启用流式推理。
-            chunk_size: 流式推理块大小。
 
         Returns:
             TTSResult 对象。
@@ -160,7 +158,6 @@ class TTSStream:
                 - 'beijing_dialect' , 'sichuan_dialect' 
             config: 推理配置对象 (TTSConfig)。
             streaming: 是否启用流式推理。
-            chunk_size: 流式推理块大小。
 
         Returns:
             TTSResult 对象。
@@ -186,7 +183,7 @@ class TTSStream:
 
     def _run_engine_loop(self, pdata: PromptData, timing: Timing, cfg: TTSConfig) -> LoopOutput:
         streaming = cfg.streaming
-        chunk_size = cfg.chunk_size
+        chunk_size = self.engine.chunk_size
         all_codes = []
         turn_summed_embeds = []
         chunk_buffer = []

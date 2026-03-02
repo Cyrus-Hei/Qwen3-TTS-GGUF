@@ -52,7 +52,6 @@ def main():
         seed=42, 
         sub_seed=45,
         streaming=True,
-        chunk_size=8
     )
     # config = TTSConfig(max_steps=400, do_sample=False, sub_do_sample=False)
     result = stream.clone(

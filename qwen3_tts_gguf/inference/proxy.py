@@ -20,9 +20,10 @@ class DecoderProxy:
     它负责在独立进程中拉起 DecoderWorker 和 SpeakerWorker，
     并提供线程安全的任务队列接口。
     """
-    def __init__(self, onnx_path: str, use_dml: bool = True):
+    def __init__(self, onnx_path: str, use_dml: bool = True, chunk_size: int = 8):
         self.onnx_path = onnx_path
         self.use_dml = use_dml
+        self.chunk_size = chunk_size
         
         # 任务控制
         self.task_counter = 0
@@ -67,7 +68,7 @@ class DecoderProxy:
         # 1. 解调子进程 (Decoder)
         self.decoder_proc = mp.Process(
             target=decoder_worker_proc,
-            args=(self.codes_q, self.result_q, self.onnx_path),
+            args=(self.codes_q, self.result_q, self.onnx_path, self.chunk_size),
             daemon=True
         )
         self.decoder_proc.start()

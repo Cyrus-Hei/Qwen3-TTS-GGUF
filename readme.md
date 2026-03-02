@@ -138,7 +138,7 @@ python 51-Interactive-Clone.py
 from qwen3_tts_gguf import TTSEngine, TTSConfig
 
 # 初始化引擎（后台自动并行加载模型）
-engine = TTSEngine(model_dir="model-base")
+engine = TTSEngine(model_dir="model-base", chunk_size=8)
 stream = engine.create_stream()
 
 # 设置音色（支持 .wav 路径、.json 路径或 TTSResult 对象）
@@ -151,7 +151,6 @@ config = TTSConfig(
     seed=42,           # 核心种子
     sub_seed=45,       # 细节种子
     streaming=True,    # 开启流式
-    chunk_size=8       # 流式块大小
 )
 
 # 流式合成
