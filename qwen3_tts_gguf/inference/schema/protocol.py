@@ -13,6 +13,7 @@ class DecoderState:
     conv_history: Optional[np.ndarray] = None
     kv_cache: List[np.ndarray] = field(default_factory=list)
     skip_samples: int = 0  # 待抵消的采样点数 (用于对齐记忆注入时的残留)
+    latent_audio: Optional[np.ndarray] = None # 积压的音频尾部 (用于流式结束时取出尾部)
 
 @dataclass
 class DecoderSession:
