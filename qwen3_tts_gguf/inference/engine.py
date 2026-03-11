@@ -24,8 +24,7 @@ class TTSEngine:
         
         t_start = time.time()
         self.ready = False
-        self.project_root = Path.cwd()
-        self.model_dir = self.project_root / model_dir
+        self.model_dir = Path(model_dir)
         self.chunk_size = chunk_size
         
         # 路径定义 (全线使用 Path 对象)
@@ -98,14 +97,10 @@ class TTSEngine:
         """初始化 GGUF 模型（仅加载模型，不创建 Context）"""
         logger.info("[Engine] 正在加载 GGUF 模型...")
         
-        # 转换相对路径以便 FFI 库能正确识别 (posix 风格字符串)
-        t_path = self.paths["talker_gguf"].relative_to(self.project_root).as_posix()
-        p_path = self.paths["predictor_gguf"].relative_to(self.project_root).as_posix()
-        
         try:
             # 使用新的 LlamaModel 类
-            self.talker_model = llama.LlamaModel(t_path, n_gpu_layers=-1)
-            self.predictor_model = llama.LlamaModel(p_path, n_gpu_layers=-1)
+            self.talker_model = llama.LlamaModel(self.paths["talker_gguf"], n_gpu_layers=-1)
+            self.predictor_model = llama.LlamaModel(self.paths["predictor_gguf"], n_gpu_layers=-1)
             
             logger.info("✅ [Engine] GGUF 模型加载完成。")
         except Exception as e:
