@@ -34,7 +34,7 @@ from .configuration_mimi import MimiConfig
 
 
 if is_flash_attn_available():
-    from ...modeling_flash_attention_utils import _flash_attention_forward
+    from transformers.modeling_flash_attention_utils import _flash_attention_forward
 
 
 logger = logging.get_logger(__name__)
