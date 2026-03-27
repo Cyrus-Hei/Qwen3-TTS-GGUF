@@ -17,7 +17,7 @@ class TTSEngine:
     """
     Qwen3-TTS 引擎：资源池与 Stream 工厂。
     """
-    def __init__(self, model_dir="model", onnx_provider="CUDA", chunk_size=12, verbose=True):
+    def __init__(self, model_dir="model", onnx_provider="CUDA", llm_use_gpu=True, chunk_size=12, verbose=True):
         import time
         import numpy as np
         from tokenizers import Tokenizer
@@ -69,7 +69,7 @@ class TTSEngine:
 
             # 4. 模型引擎初始化 (并行点 2: GGUF 在主进程加载，Decoder 在子进程同时初始化)
             t_gguf = time.time()
-            self._init_llama_engines()
+            self._init_llama_engines(llm_use_gpu)
             if verbose: print(f"🧠 [Engine] GGUF 推理后端就绪 (耗时: {time.time()-t_gguf:.2f}s)")
             
             # 5. 最后同步阻塞等待解码器信号
@@ -93,14 +93,14 @@ class TTSEngine:
     def __bool__(self):
         return self.ready
 
-    def _init_llama_engines(self):
+    def _init_llama_engines(self, llm_use_gpu):
         """初始化 GGUF 模型（仅加载模型，不创建 Context）"""
         logger.info("[Engine] 正在加载 GGUF 模型...")
         
         try:
             # 使用新的 LlamaModel 类
-            self.talker_model = llama.LlamaModel(self.paths["talker_gguf"], n_gpu_layers=-1)
-            self.predictor_model = llama.LlamaModel(self.paths["predictor_gguf"], n_gpu_layers=-1)
+            self.talker_model = llama.LlamaModel(self.paths["talker_gguf"], n_gpu_layers=-1, use_gpu=llm_use_gpu)
+            self.predictor_model = llama.LlamaModel(self.paths["predictor_gguf"], n_gpu_layers=-1, use_gpu=llm_use_gpu)
             
             logger.info("✅ [Engine] GGUF 模型加载完成。")
         except Exception as e:
