@@ -95,11 +95,11 @@ modelscope download --model Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
 
 #### 依赖环境
 
-从 [llama.cpp Releases](https://github.com/ggml-org/llama.cpp/releases) 下载预编译二进制，将 DLL 放入 `qwen_asr_gguf/bin/`：
+适配版本 **llama.cpp b9333**。从 [llama.cpp Releases](https://github.com/ggml-org/llama.cpp/releases/b9333) 下载预编译二进制，将 DLL 放入 `qwen_asr_gguf/bin/`：
 
 | 平台 | 下载文件 |
 |------|----------|
-| **Windows** | `llama-bXXXX-bin-win-vulkan-x64.zip` |
+| **Windows** | `llama-b9333-bin-win-vulkan-x64.zip` |
 
 另外还需安装 FFmpeg，用于读取音频文件。
 

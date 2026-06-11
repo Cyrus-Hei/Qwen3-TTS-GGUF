@@ -1,3 +1,7 @@
+"""
+llama.cpp b9333 的 ctypes Python 绑定封装
+"""
+
 import sys
 import os
 import ctypes
