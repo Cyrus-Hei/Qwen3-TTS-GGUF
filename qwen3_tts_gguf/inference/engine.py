@@ -17,7 +17,7 @@ class TTSEngine:
     """
     Qwen3-TTS 引擎：资源池与 Stream 工厂。
     """
-    def __init__(self, model_dir="model", onnx_provider="CUDA", llm_use_gpu=True, chunk_size=12, verbose=True):
+    def __init__(self, model_dir="model", onnx_provider="DML", llm_use_gpu=True, chunk_size=12, verbose=True):
         import time
         import numpy as np
         from tokenizers import Tokenizer
@@ -29,7 +29,7 @@ class TTSEngine:
         
         # 路径定义 (全线使用 Path 对象)
         self.paths = {
-            "talker_gguf": self.model_dir / "qwen3_tts_talker.q5_k.gguf",
+            "talker_gguf": self.model_dir / "qwen3_tts_talker.q8_0.gguf",
             "predictor_gguf": self.model_dir / "qwen3_tts_predictor.q8_0.gguf",
             "decoder_onnx": self.model_dir / "qwen3_tts_decoder.fp16.onnx",
             "codec_enc_onnx": self.model_dir / "qwen3_tts_codec_encoder.fp16.onnx",

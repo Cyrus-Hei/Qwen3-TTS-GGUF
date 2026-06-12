@@ -8,12 +8,11 @@ librosa
 soundfile
 sox
 onnx
+onnxscript
 onnxruntime-directml
 einops
 pydub
 sentencepiece
-
-
 
 sounddevice
 soundfile

@@ -72,15 +72,14 @@ class StatefulDecoder:
             providers.insert(0, 'DmlExecutionProvider')
         elif self.onnx_provider == 'CUDA' and 'CUDAExecutionProvider' in available_providers:
             providers.insert(0, 'CUDAExecutionProvider')
-
+        else:
+            print("No other providers found!", self.onnx_provider, ort.get_available_providers()) 
         sess_opts = ort.SessionOptions()
         sess_opts.log_severity_level = 3
         sess_opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
         sess_opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-
         self.sess = ort.InferenceSession(onnx_path, sess_options=sess_opts, providers=providers)
-        
         # 动态检测输入类型 (跳过第一个整数类型的 audio_codes)
         float_input = next(i for i in self.sess.get_inputs() if "float" in i.type)
         self.dtype = np.float16 if "float16" in float_input.type else np.float32
@@ -89,7 +88,6 @@ class StatefulDecoder:
         
         # 获取实际使用的 provider
         self.active_provider = self.sess.get_providers()[0]
-        
         # 用虚假的历史和code预热
         warmup_codes = np.zeros((self.chunk_size, 16), dtype=np.int64)
         self.decode(warmup_codes, state=self.create_state(72), is_final=True)

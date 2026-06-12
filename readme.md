@@ -1,3 +1,23 @@
+# Qwen3-TTS GGUF Extra
+Differences from the original repo:
+- some bug fixes
+- added fastapi based openai compatible server
+- saves cloned voice as embeddings to avoid re-encoding
+- whisper for auto STT of audio file
+- Talker module defaults to Q8_0 instead of Q5_K
+
+Planned additions:
+- English readme
+- one-click download and install
+- use hf instead of modelscope
+- intermediate model files clean up script
+
+What's good about Qwen3-TTS GGUF:
+- uses quantized model for very small vram footprint(~2GB)
+- supports the use of reference text in voice cloning for much higher clone accuracy
+- low RTF for vulkan/CUDA
+- utility for saving embeddings as json for much faster voice start-up time
+
 # Qwen3-TTS GGUF
 
 用 llama.cpp 跑的 Qwen3-TTS，支持流式合成、声音克隆。
@@ -95,16 +115,17 @@ modelscope download --model Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
 
 #### 依赖环境
 
-适配版本 **llama.cpp b9333**。从 [llama.cpp Releases](https://github.com/ggml-org/llama.cpp/releases/b9333) 下载预编译二进制，将 DLL 放入 `qwen_asr_gguf/bin/`：
+适配版本 **llama.cpp b9333**。从 [llama.cpp Releases](https://github.com/ggml-org/llama.cpp/releases/b9333) 下载预编译二进制，将 DLL 放入 `qwen3_tts_gguf\inference\bin`(download both files for CUDA)：
 
 | 平台 | 下载文件 |
 |------|----------|
-| **Windows** | `llama-b9333-bin-win-vulkan-x64.zip` |
+| **Windows(vulkan)** | `llama-b9333-bin-win-vulkan-x64.zip` |
+| **Windows(CUDA)** | `llama-b9333-bin-win-cuda-13.1-x64.zip `, `cudart-llama-bin-win-cuda-13.1-x64.zip`  |
 
 另外还需安装 FFmpeg，用于读取音频文件。
 
 ``` 
-pip install -r requirements.txt
+pip install -r requirements-windows.txt
 ```
 
 #### 配置路径
@@ -231,6 +252,20 @@ CustomVoice 模型内置 9 个音色：
 推理引擎：
 - Talker / Predictor: llama.cpp (GGUF格式，Vulkan/Cuda 加速)
 - Encoder / Decoder: ONNX Runtime (ONNX格式，DirectML/Cuda 加速)
+
+## Install whisper.cpp
+Install whisper.cpp from [whisper.cpp release](https://github.com/ggml-org/whisper.cpp/releases/tag/v1.8.6) and extract contexts to `\whisper.cpp`.
+
+| 平台 | 下载文件 |
+|------|----------|
+| **Windows(cuda)** | `whisper-cublas-12.4.0-bin-x64.zip ` |
+
+## Running STT(Speech To Text) for audio files
+Put audio files in `\voices` and run:
+```
+python batch_transcribe.py
+```
+The script will look for any audio files without any txt(reference text) or json(embeddings) counterparts, then generate a reference text txt file for each audio file found.
 
 ## 常见问题
 

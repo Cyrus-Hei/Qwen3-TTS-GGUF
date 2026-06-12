@@ -5,7 +5,7 @@ from pathlib import Path
 
 # 1. 确保能导入 llama.cpp 的转换脚本
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-CONVERT_LIB_DIR = os.path.join(PROJECT_ROOT, "ref", "llama.cpp")
+CONVERT_LIB_DIR = os.path.join(PROJECT_ROOT, "qwen3_tts_gguf", 'export')
 
 if CONVERT_LIB_DIR not in sys.path:
     sys.path.insert(0, CONVERT_LIB_DIR)
