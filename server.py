@@ -198,11 +198,12 @@ def text_to_speech(request: SpeechRequest, raw_request: Request, background_task
 
     # 2. Prepare generation hyper-parameters
     cfg = TTSConfig(
+        max_steps=1000,
         temperature=request.temperature, 
         sub_temperature=request.temperature, 
         seed=42, 
         sub_seed=45,
-        streaming=False
+        streaming=True
     )
 
     # 3. Acquire a localized temporary file to hold synthesized audio
@@ -239,7 +240,7 @@ def text_to_speech(request: SpeechRequest, raw_request: Request, background_task
 
     # 5. Queue cleanup file removal from server storage after stream completes
     background_tasks.add_task(os.remove, temp_wav_path)
-
+    print(f"breakpoint 1")
     # 6. Stream content response back matching standard OpenAI clients
     return FileResponse(temp_wav_path, media_type="audio/wav", filename="speech.wav")
 

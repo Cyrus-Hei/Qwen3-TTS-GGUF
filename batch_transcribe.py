@@ -6,9 +6,12 @@ import subprocess
 # Target folder containing audio files to transcribe
 TARGET_DIR = os.path.join(os.getcwd(), "voices")
 
+# File name of the whisper model
+MODEL_FILE_NAME = "whisper-large-v3-turbo-q8_0.gguf"
+
 # Paths based on your specific directory layout
 WHISPER_DIR = os.path.join(os.getcwd(), "whisper.cpp")
-MODEL_PATH = os.path.join(WHISPER_DIR, "whisper-large-v3-turbo-q8_0.gguf")
+MODEL_PATH = os.path.join(WHISPER_DIR, MODEL_FILE_NAME)
 
 # Supported input audio formats
 AUDIO_EXTENSIONS = (".wav", ".mp3", ".flac", ".m4a")

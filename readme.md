@@ -18,6 +18,9 @@ What's good about Qwen3-TTS GGUF:
 - low RTF for vulkan/CUDA
 - utility for saving embeddings as json for much faster voice start-up time
 
+> [!IMPORTANT]
+> Currently this project mainly aims to support Windows, though in theory should also work in Linux, but dependencies and downloads for llama.cpp and whisper.cpp would be different. 
+
 # Qwen3-TTS GGUF
 
 用 llama.cpp 跑的 Qwen3-TTS，支持流式合成、声音克隆。
@@ -117,7 +120,7 @@ modelscope download --model Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
 
 适配版本 **llama.cpp b9333**。从 [llama.cpp Releases](https://github.com/ggml-org/llama.cpp/releases/b9333) 下载预编译二进制，将 DLL 放入 `qwen3_tts_gguf\inference\bin`(download both files for CUDA)：
 
-| 平台 | 下载文件 |
+| Platform | File |
 |------|----------|
 | **Windows(vulkan)** | `llama-b9333-bin-win-vulkan-x64.zip` |
 | **Windows(CUDA)** | `llama-b9333-bin-win-cuda-13.1-x64.zip `, `cudart-llama-bin-win-cuda-13.1-x64.zip`  |
@@ -256,9 +259,14 @@ CustomVoice 模型内置 9 个音色：
 ## Install whisper.cpp
 Install whisper.cpp from [whisper.cpp release](https://github.com/ggml-org/whisper.cpp/releases/tag/v1.8.6) and extract contexts to `\whisper.cpp`.
 
-| 平台 | 下载文件 |
+| Platform | file |
 |------|----------|
 | **Windows(cuda)** | `whisper-cublas-12.4.0-bin-x64.zip ` |
+
+## Download and set whisper model
+1. Downdload a whisper.cpp compatible whisper model(I recommend using https://huggingface.co/oxide-lab/whisper-large-v3-turbo-GGUF/tree/main/whisper.cpp).
+2. Put the model safetensors in `\whisper.cpp`.
+3. `batch_transcribe.py` defaults to using `whisper-large-v3-turbo-q8_0.gguf`, change `MODEL_FILE_NAME` in `batch_transcribe.py` if using other model or quants.
 
 ## Running STT(Speech To Text) for audio files
 Put audio files in `\voices` and run:

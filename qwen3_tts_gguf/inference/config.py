@@ -26,5 +26,5 @@ class TTSConfig:
     sub_seed: int = None             # 工匠阶段随机种子。固定后可以使声学细节（如电音感、音色细微变化）保持一致。
     
     # --- 全局生成控制 ---
-    max_steps: int = 300             # 最大生成步数。决定了单次合成最长的持续时间。
+    max_steps: int = 500             # 最大生成步数。决定了单次合成最长的持续时间。
     streaming: bool = True           # 是否启用流式推理。
