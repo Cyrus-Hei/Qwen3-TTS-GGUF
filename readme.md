@@ -18,6 +18,9 @@ What's good about Qwen3-TTS GGUF:
 - low RTF for vulkan/CUDA
 - utility for saving embeddings as json for much faster voice start-up time
 
+> [!NOTE]
+> Branch for fixing  to fix crashing with longer(>30s) ref audio by rewriting server logic, now closer to interactive script, but overhead seems harsher.
+
 > [!IMPORTANT]
 > Currently this project mainly aims to support Windows, though in theory should also work in Linux, but dependencies and downloads for llama.cpp and whisper.cpp would be different. 
 

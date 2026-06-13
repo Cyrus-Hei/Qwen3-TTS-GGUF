@@ -17,7 +17,7 @@ class TTSEngine:
     """
     Qwen3-TTS 引擎：资源池与 Stream 工厂。
     """
-    def __init__(self, model_dir="model", onnx_provider="DML", llm_use_gpu=True, chunk_size=12, verbose=True):
+    def __init__(self, model_dir="model", onnx_provider="DML", llm_use_gpu=True, chunk_size=12, verbose=True, enable_speaker=True):
         import time
         import numpy as np
         from tokenizers import Tokenizer
@@ -64,8 +64,13 @@ class TTSEngine:
 
             # 3. 异步拉起解码器进程 (并行点 1)
             t_parallel = time.time()
-            self.decoder = DecoderProxy(str(self.paths["decoder_onnx"]), onnx_provider=onnx_provider, chunk_size=self.chunk_size)
-            if verbose: print("⏳ [Engine] 正在拉起子进程解码器...")
+            self.decoder = DecoderProxy(
+                str(self.paths["decoder_onnx"]), 
+                onnx_provider=onnx_provider, 
+                chunk_size=self.chunk_size, 
+                enable_speaker=enable_speaker
+            )
+            if verbose: print(f"⏳ [Engine] 正在拉起子进程解码器 (Speaker: {'Enabled' if enable_speaker else 'Disabled'})...")
 
             # 4. 模型引擎初始化 (并行点 2: GGUF 在主进程加载，Decoder 在子进程同时初始化)
             t_gguf = time.time()

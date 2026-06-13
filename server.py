@@ -4,11 +4,13 @@ import time
 import shutil
 import tempfile
 import threading
+import traceback as tb_module
+import io
 from contextlib import asynccontextmanager
 from typing import Optional
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import StreamingResponse, PlainTextResponse, Response
 
 # Set GPU device if needed (matching your setup)
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
@@ -20,6 +22,10 @@ from qwen3_tts_gguf.inference import TTSEngine, TTSConfig, TTSResult
 
 # Global instances
 engine = None
+# Cache for TTSStream objects keyed by voice name to eliminate redundant 
+# LlamaContext allocation and expensive pre-decoding passes.
+STREAM_CACHE = {}
+MAX_CACHE_SIZE = 5
 inference_lock = threading.Lock()
 
 # Directory to manage custom voices
@@ -75,7 +81,9 @@ async def lifespan(app: FastAPI):
     # --- Startup ---
     global engine
     print("\n🚀 Initializing Qwen3-TTS Engine...")
-    engine = TTSEngine('model-base', verbose=False)
+    # Initialize in headless mode (enable_speaker=False) for the API server
+    # to prevent PortAudio conflicts with HTTP response delivery on Windows.
+    engine = TTSEngine('model-base', verbose=False, enable_speaker=False)
     print("✨ Qwen3-TTS Engine loaded and ready!")
 
     voices_str = get_available_voices_list()
@@ -84,6 +92,11 @@ async def lifespan(app: FastAPI):
     yield
 
     # --- Shutdown ---
+    if STREAM_CACHE:
+        print(f"\n🛑 Shutting down {len(STREAM_CACHE)} cached streams...")
+        for s in STREAM_CACHE.values():
+            s.shutdown()
+        STREAM_CACHE.clear()
     if engine:
         print("\n🛑 Shutting down TTS engine...")
         engine.shutdown()
@@ -203,7 +216,7 @@ def text_to_speech(request: SpeechRequest, raw_request: Request, background_task
         sub_temperature=request.temperature, 
         seed=42, 
         sub_seed=45,
-        streaming=True
+        streaming=False
     )
 
     # 3. Acquire a localized temporary file to hold synthesized audio
@@ -214,35 +227,98 @@ def text_to_speech(request: SpeechRequest, raw_request: Request, background_task
     # 4. Serialize inference through execution lock
     with inference_lock:
         try:
-            # Create a rapid lightweight stream window
-            stream = engine.create_stream()
-            # Assigning pre-baked TTSResult profile directly skips encoding
-            stream.set_voice(voice_profile)
+            voice_name = request.voice
             
-            print(f"🎤 Synthesizing with voice '{request.voice}': \"{request.input[:40]}...\"")
+            # Voice-Aware Stream Caching:
+            # If a stream for this voice already exists, reuse it to skip 
+            # the expensive pre-decoding pass of the reference audio.
+            if voice_name in STREAM_CACHE:
+                print(f"[DEBUG] Reusing cached stream for voice: {voice_name}")
+                stream = STREAM_CACHE[voice_name]
+            else:
+                print(f"[DEBUG] Creating new cached stream for voice: {voice_name}")
+                stream = engine.create_stream()
+                # Initialize the stream with the voice profile (performs pre-decoding once)
+                stream.set_voice(voice_profile)
+                
+                # Manage cache size to prevent OOM (LRU-ish)
+                if len(STREAM_CACHE) >= MAX_CACHE_SIZE:
+                    # Remove the first item (oldest)
+                    oldest_voice = next(iter(STREAM_CACHE))
+                    old_stream = STREAM_CACHE.pop(oldest_voice)
+                    old_stream.shutdown()
+                    print(f"[DEBUG] Evicted voice '{oldest_voice}' from cache.")
+                
+                STREAM_CACHE[voice_name] = stream
+
+            print(f"🎤 Synthesizing with voice '{voice_name}': \"{request.input[:40]}...\"")
+            print(f"[DEBUG] Calling stream.clone()...")
+            # Note: stream.clone() internally calls talker.clear_memory() to reset 
+            # synthesis state without destroying the voice anchor.
             result = stream.clone(
                 text=request.input, 
                 language=request.language, 
                 zero_shot=False, 
                 config=cfg
             )
+            print(f"[DEBUG] stream.clone() returned, result={result is not None}")
+            print(f"[DEBUG] Calling stream.join()...")
             stream.join()
+            print(f"[DEBUG] stream.join() completed")
             
             if result:
+                print(f"[DEBUG] Saving result to {temp_wav_path}...")
                 result.save(temp_wav_path)
+                print(f"[DEBUG] Result saved, printing RTF...")
                 print(f"[RTF: {result.rtf:.2f}]")
+                print(f"[DEBUG] RTF printed")
+                
+                # Speaker is disabled in headless mode for the API server, 
+                # so no restart is needed here.
             else:
                 raise HTTPException(status_code=500, detail="TTS synthesis returned null output.")
         except Exception as e:
+            print(f"[ERROR] Synthesis failed: {e}")
+            tb_module.print_exc()
             if os.path.exists(temp_wav_path):
                 os.remove(temp_wav_path)
             raise HTTPException(status_code=500, detail=f"Inference execution failed: {str(e)}")
 
-    # 5. Queue cleanup file removal from server storage after stream completes
-    background_tasks.add_task(os.remove, temp_wav_path)
-    print(f"breakpoint 1")
-    # 6. Stream content response back matching standard OpenAI clients
-    return FileResponse(temp_wav_path, media_type="audio/wav", filename="speech.wav")
+    # 6. Read the entire WAV file into memory BEFORE any streaming begins.
+    # The crash happens during uvicorn's response streaming when iterfile tries
+    # to read from disk while the decoder/speaker subprocesses are still running.
+    # By loading into memory first, we eliminate all file I/O during streaming,
+    # which prevents the C-level crash caused by async I/O + subprocess interaction.
+    print(f"[DEBUG] Reading file into memory: {temp_wav_path}")
+    with open(temp_wav_path, "rb") as f:
+        file_content = f.read()
+    print(f"[DEBUG] File loaded into memory: {len(file_content)} bytes")
+    
+    # 7. Clean up temp file immediately (no longer needed on disk)
+    temp_file_deleted = False
+    try:
+        os.remove(temp_wav_path)
+        temp_file_deleted = True
+        print(f"[DEBUG] Temp file deleted: {temp_wav_path}")
+    except Exception as e:
+        print(f"[DEBUG] Failed to delete temp file: {e}")
+    
+    # 8. Return as Response (synchronous, non-streaming) to bypass StreamingResponse's async iteration
+    # StreamingResponse uses an async generator which may interact poorly with running subprocesses
+    # Response sends bytes directly without async iteration
+    print(f"[DEBUG] Returning Response with {len(file_content)} bytes...")
+    try:
+        resp = Response(
+            content=file_content, 
+            media_type="audio/wav", 
+            headers={"Content-Disposition": "attachment; filename=speech.wav"}
+        )
+        print(f"[DEBUG] Response returned successfully")
+        return resp
+    except Exception as e:
+        print(f"[ERROR] Response creation failed: {e}")
+        tb_module.print_exc()
+        raise
 
 if __name__ == "__main__":
     import uvicorn

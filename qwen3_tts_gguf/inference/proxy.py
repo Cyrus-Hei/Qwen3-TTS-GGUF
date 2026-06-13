@@ -20,10 +20,11 @@ class DecoderProxy:
     它负责在独立进程中拉起 DecoderWorker 和 SpeakerWorker，
     并提供线程安全的任务队列接口。
     """
-    def __init__(self, onnx_path: str, onnx_provider: str = 'CPU', chunk_size: int = 12):
+    def __init__(self, onnx_path: str, onnx_provider: str = 'CPU', chunk_size: int = 12, enable_speaker: bool = True):
         self.onnx_path = onnx_path
         self.onnx_provider = onnx_provider
         self.chunk_size = chunk_size
+        self.enable_speaker = enable_speaker
         
         # 任务控制
         self.task_counter = 0
@@ -73,13 +74,16 @@ class DecoderProxy:
         )
         self.decoder_proc.start()
         
-        # 2. 播放子进程 (Speaker)
-        self.play_proc = mp.Process(
-            target=speaker_worker_proc,
-            args=(self.play_q, self.result_q),
-            daemon=True
-        )
-        self.play_proc.start()
+        # 2. 播放子进程 (Speaker) - Optional
+        if self.enable_speaker:
+            self.play_proc = mp.Process(
+                target=speaker_worker_proc,
+                args=(self.play_q, self.result_q),
+                daemon=True
+            )
+            self.play_proc.start()
+        else:
+            self.play_proc = None
         
         # 3. 启动本地监听器
         self.listener_thread = threading.Thread(target=self._listen_loop, daemon=True)
@@ -170,7 +174,12 @@ class DecoderProxy:
         """阻塞直到所有工作进程就绪"""
         t0 = time.time()
         while time.time() - t0 < timeout:
-            if all(self.ready_states.values()):
+            # The decoder must always be ready. 
+            # The speaker only needs to be ready if it is enabled.
+            decoder_ready = self.ready_states["decoder"]
+            speaker_ready = self.ready_states["speaker"] if self.enable_speaker else True
+            
+            if decoder_ready and speaker_ready:
                 return True
             time.sleep(0.1)
         return False
@@ -307,6 +316,44 @@ class DecoderProxy:
         """直接推送 PCM"""
         if pcm is not None and len(pcm) > 0:
             self.play_q.put(SpeakerRequest(msg_type="AUDIO", audio=pcm))
+
+    def restart_speaker(self):
+        """Stop and restart the speaker subprocess.
+        
+        Only executes if speaker is enabled.
+        """
+        if not self.enable_speaker:
+            return True
+            
+        import time as _time
+        
+        # Save old process reference
+        old_play_proc = self.play_proc
+        
+        # Send EXIT to old speaker
+        try:
+            if old_play_proc and old_play_proc.is_alive():
+                self.play_q.put(SpeakerRequest(msg_type="EXIT"))
+                old_play_proc.join(timeout=1.0)
+        except Exception:
+            pass
+        
+        # Reset speaker state
+        self.ready_states["speaker"] = False
+        self.speaker_status = "IDLE"
+        self.speaker_idle.set()
+        
+        # Spawn fresh speaker process
+        from .workers.speaker import speaker_worker_proc
+        self.play_proc = mp.Process(
+            target=speaker_worker_proc,
+            args=(self.play_q, self.result_q),
+            daemon=True
+        )
+        self.play_proc.start()
+        
+        # Wait for ready signal
+        return self.wait_until_ready(timeout=5)
 
     def shutdown(self):
         """关闭所有子进程"""
